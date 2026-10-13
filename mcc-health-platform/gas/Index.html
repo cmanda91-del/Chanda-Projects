@@ -61,6 +61,7 @@
         <a href="#" data-view="home" class="nav">🏠 Home</a>
         <a href="#" data-view="capture" class="nav" data-need="pii">🧾 Capture (tracker)</a>
         <a href="#" data-view="upload" class="nav">⬆️ Data upload</a>
+        <a href="#" data-view="odk" class="nav" data-need="pii">📱 KoBo / ODK</a>
         <a href="#" data-view="browse" class="nav">🗂️ Data browser</a>
         <a href="#" data-view="admin" class="nav" data-need="admin">⚙️ Administration</a>
       </nav>
@@ -100,6 +101,7 @@
             <button class="btn ghost" id="form-back">← Back</button>
             <h1 id="form-title" class="grow"></h1>
           </div>
+          <div id="form-lookup"></div>
           <div id="form-banner"></div>
           <div id="form-head" class="card form-head"></div>
           <form id="form-body" novalidate></form>
@@ -130,6 +132,37 @@
           </div>
           <h3>Uploaded files</h3>
           <div id="up-list"></div>
+        </section>
+
+        <!-- KOBO / ODK -->
+        <section id="v-odk" class="view" hidden>
+          <h1>KoBo / ODK data collection</h1>
+          <p class="muted small">Collect on phones with KoBoCollect, ODK Collect or KoBo web forms (Enketo), offline if needed. Each form finds the client by NRC, QR scan, UMID or name, and fills in her UMID, facility, EDD and HIV status from the client list.</p>
+          <div class="card">
+            <h3>1. Download the forms (XLSForm)</h3>
+            <div id="odk-forms" class="stages"></div>
+            <p class="small muted">Field names are the platform's data element codes, so submissions map straight into the tracker.</p>
+          </div>
+          <div class="card" data-need="entry">
+            <h3>2. Download the client list (clients.csv)</h3>
+            <p class="small">Attach it to every visit form as a <b>media file</b> named <code>clients.csv</code> (KoBo: form → Settings → Media; ODK Central: form → Attachments). Download a fresh copy whenever new women are registered.</p>
+            <p class="small msg">It contains names, NRCs and phone numbers for your facilities. Keep it on project devices only.</p>
+            <button class="btn" id="odk-clients">Download clients.csv</button>
+          </div>
+          <div class="card" data-need="admin">
+            <h3>3. Send submissions to the platform</h3>
+            <p class="small"><b>KoBoToolbox:</b> project → Settings → REST Services → Register a new service. Paste this endpoint URL and choose JSON. Each submission is then saved automatically, and appears in the <b>Submissions</b> table of the Data browser.</p>
+            <div class="bar"><input id="odk-url" readonly><button class="btn" id="odk-copy">Copy</button><button class="btn ghost danger" id="odk-regen">New key</button></div>
+            <p class="small"><b>ODK Central or a KoBo export:</b> download the submissions as CSV/XLSX with field names as headers and use <b>Data upload → Import as … events</b>. Group prefixes such as <code>g2/</code> are removed automatically.</p>
+          </div>
+          <div class="card">
+            <h3>How forms find the client</h3>
+            <ol class="small">
+              <li><b>Registration form</b> creates a new woman, or updates her if the NRC is already registered. The platform assigns her UMID.</li>
+              <li><b>Visit forms</b> (ANC 1, ANC follow-up, delivery, PNC, loss, referral, exit) start with "Find client". The form then shows her UMID, facility, DOB, village, ANC number, HIV status, EDD and risk flags, and asks you to confirm before you continue.</li>
+              <li><b>ANC 1</b> asks for the LMP when she has no active pregnancy. The platform then opens a new pregnancy record automatically.</li>
+            </ol>
+          </div>
         </section>
 
         <!-- BROWSE -->

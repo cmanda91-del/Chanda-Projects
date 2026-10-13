@@ -110,13 +110,15 @@ const G: any = {
   },
 };
 const EXPORTS = ["setup", "adminLinks", "signup", "login", "logout", "whoami", "orgUnits", "myOrgUnits", "homeStats", "searchPersons", "duplicateCheck", "savePerson",
-  "getPerson", "enroll", "saveEvent", "uploadFile", "listUploads", "listTables", "browse", "adminUsers", "adminUpdateUser", "adminAddOrgUnit", "auth_"];
+  "getPerson", "enroll", "saveEvent", "uploadFile", "listUploads", "listTables", "browse", "adminUsers", "adminUpdateUser", "adminAddOrgUnit",
+  "lookupClient", "odkForm", "odkClients", "adminIngestKey", "ingestSubmission", "auth_"];
 const names = Object.keys(G);
 const App: any = new Function(...names, B.meta + "\n" + B.code + "\nreturn {" + EXPORTS.join(",") + "};")(...names.map((n) => G[n]));
+G.PropertiesService.getScriptProperties().setProperty("RUNTIME", "railway");
 App.setup();
 console.log("MCC platform ready. Sheets:", [...book.keys()].join(", "));
 
-const PUBLIC = new Set(EXPORTS.filter((n) => n !== "setup" && n !== "auth_"));
+const PUBLIC = new Set(EXPORTS.filter((n) => !["setup", "auth_", "ingestSubmission"].includes(n)));
 const hdrs = { "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "same-origin" };
 const json = (o: any) => new Response(JSON.stringify(o), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...hdrs } });
 const tokenUser = (t: string | null) => { try { return t ? App.auth_(t) : null; } catch { return null; } };
@@ -140,6 +142,17 @@ Bun.serve({
         return json({ val: val === undefined ? null : val });
       } catch (e: any) {
         return json({ err: String(e?.message || e) });
+      }
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/odk/submit/")) {
+      // KoBoToolbox REST Service (JSON). 2xx = stored; KoBo retries failures.
+      try {
+        const body = await req.json();
+        const r = App.ingestSubmission(decodeURIComponent(url.pathname.slice(12)), body);
+        return new Response(JSON.stringify(r), { status: 201, headers: { "Content-Type": "application/json" } });
+      } catch (e: any) {
+        const m = String(e?.message || e);
+        return new Response(JSON.stringify({ status: "error", message: m }), { status: m === "Invalid key." ? 403 : 400, headers: { "Content-Type": "application/json" } });
       }
     }
     if (req.method === "GET" && url.pathname.startsWith("/files/")) {

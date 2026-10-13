@@ -21,6 +21,7 @@ var SHEETS = {
   Persons: ['tei_id', 'umid', 'org_unit', 'created_by', 'created_at', 'updated_by', 'updated_at'],   // + registration attribute codes
   Enrollments: ['enrollment_id', 'tei_id', 'umid', 'org_unit', 'enrollment_date', 'lmp', 'status', 'created_by', 'created_at', 'completed_at'],
   Uploads: ['upload_id', 'file_name', 'mime_type', 'size_bytes', 'format', 'drive_file_id', 'drive_url', 'org_unit', 'period', 'description', 'rows_parsed', 'data_tab', 'events_imported', 'text_excerpt', 'uploaded_by', 'uploaded_at'],
+  Submissions: ['received_at', 'instance_id', 'form', 'umid', 'status', 'message'],
   Audit: ['ts', 'user', 'action', 'entity', 'entity_id', 'detail'],
 };
 var EVENT_BASE = ['event_id', 'enrollment_id', 'tei_id', 'umid', 'org_unit', 'event_date', 'status', 'created_by', 'created_at', 'updated_by', 'updated_at'];
@@ -290,11 +291,11 @@ function nextUmid_(orgUnit) {
   props.setProperty(key, String(n));
   return orgUnit + '-' + year + '-' + ('00000' + n).slice(-5);
 }
-function savePerson(token, p) {
-  var u = auth_(token, ENTRY_ROLES);
+function savePerson(token, p) { return savePerson_(auth_(token, ENTRY_ROLES), p); }
+function savePerson_(u, p) {
   var values = p.values || {};
   var sc = scope_(u);
-  if (sc.indexOf(String(p.org_unit)) < 0) throw new Error('Choose a facility in your assignment.');
+  if (sc.indexOf(String(p.org_unit)) < 0) throw new Error(u.role === 'ADMIN' ? 'Unknown facility code: ' + p.org_unit : 'Choose a facility in your assignment.');
   checkMandatory_(MCC_META.registration, values);
   if (values.MCC_NRC && !/^[0-9]{6}\/[0-9]{2}\/[0-9]$/.test(values.MCC_NRC)) throw new Error('NRC must look like 123456/78/1.');
   if (values.MCC_CONSENT_DATA !== 'true') throw new Error('Record that the client was informed of data use before saving.');
@@ -331,8 +332,8 @@ function getPerson(token, teiId) {
   delete p._row; enr.forEach(function (e) { delete e._row; });
   return { person: p, enrollments: enr, events: events };
 }
-function enroll(token, teiId, p) {
-  var u = auth_(token, ENTRY_ROLES);
+function enroll(token, teiId, p) { return enroll_(auth_(token, ENTRY_ROLES), teiId, p); }
+function enroll_(u, teiId, p) {
   var person = findBy_('Persons', 'tei_id', teiId);
   if (!person) throw new Error('Person not found.');
   if (!p.enrollment_date || !p.lmp) throw new Error('Enrollment date and date of LMP are required.');
@@ -358,8 +359,8 @@ function checkMandatory_(sections, values) {
   });
   if (missing.length) throw new Error('Required: ' + missing.slice(0, 8).join(', ') + (missing.length > 8 ? '…' : ''));
 }
-function saveEvent(token, ev) {
-  var u = auth_(token, ENTRY_ROLES);
+function saveEvent(token, ev) { return saveEvent_(auth_(token, ENTRY_ROLES), ev); }
+function saveEvent_(u, ev) {
   var st = stage_(ev.stage);
   var enr = findBy_('Enrollments', 'enrollment_id', ev.enrollment_id);
   if (!enr) throw new Error('Enrollment not found.');
@@ -429,7 +430,7 @@ function uploadFile(token, f) {
 /** Rows with headers umid, event_date, [status] and data element codes become events in the matching stage. */
 function importEvents_(u, stageCode, grid) {
   var st = stage_(stageCode);
-  var h = grid[0].map(function (x) { return String(x).trim(); });
+  var h = grid[0].map(function (x) { return String(x).trim().split('/').pop(); }); // KoBo/ODK exports prefix group names
   var iU = h.indexOf('umid'), iD = h.indexOf('event_date');
   if (iU < 0 || iD < 0) throw new Error('To import as events the sheet needs the columns umid and event_date (download the template).');
   var allowed = {}; st.sections.forEach(function (s) { s.fields.forEach(function (f) { allowed[f] = true; }); });
@@ -525,4 +526,252 @@ function adminLinks(token) {
   auth_(token, ['ADMIN']);
   var p = PropertiesService.getScriptProperties();
   return { sheet: db_().getUrl(), folder: 'https://drive.google.com/drive/folders/' + p.getProperty('UPLOAD_FOLDER_ID') };
+}
+
+
+// ------------------------------------------------------------------ client lookup (prefill for continuum of care)
+function personSummary_(p, enrolls, facilities) {
+  var act = enrolls.filter(function (e) { return e.tei_id === p.tei_id && e.status === 'ACTIVE'; })[0];
+  var out = { tei_id: p.tei_id, umid: p.umid, name: [p.MCC_FIRST_NAME, p.MCC_OTHER_NAMES, p.MCC_SURNAME].filter(String).join(' '),
+    nrc: p.MCC_NRC, dob: p.MCC_DOB, village: p.MCC_VILLAGE, zone: p.MCC_ZONE, phone: p.MCC_PHONE, hiv_status: p.MCC_HIV_STATUS,
+    anc_reg_no: p.MCC_ANC_REG_NO, art_no: p.MCC_ART_NO, facility: p.org_unit, facility_name: facilities[p.org_unit] || p.org_unit,
+    pregnancies: enrolls.filter(function (e) { return e.tei_id === p.tei_id; }).length, active: null };
+  if (act) {
+    var last = null;
+    MCC_META.stages.forEach(function (st) {
+      readAll_('EV_' + st.code).forEach(function (e) {
+        if (e.enrollment_id === act.enrollment_id && (!last || String(e.event_date) > String(last.date))) last = { date: e.event_date, stage: st.name, risk: e.MCC_HIGH_RISK, reasons: e.MCC_RISK_REASONS, next: e.MCC_NEXT_APPT };
+      });
+    });
+    out.active = { enrollment_id: act.enrollment_id, lmp: act.lmp, edd: isoDate_(new Date(new Date(act.lmp).getTime() + 280 * 86400000)),
+      booked: act.enrollment_date, facility: act.org_unit, last: last };
+  }
+  return out;
+}
+/** Find existing clients by NRC, UMID, phone or name so forms can reuse their identifiers. Searches all facilities (women move); every call is audited. */
+function lookupClient(token, q) {
+  var u = auth_(token, PII_ROLES);
+  q = q || {};
+  var nrc = String(q.nrc || '').trim(), umid = String(q.umid || '').trim().toUpperCase(), phone = String(q.phone || '').replace(/\D/g, '');
+  var fn = String(q.first || '').trim().toLowerCase(), sn = String(q.surname || '').trim().toLowerCase();
+  if (!nrc && !umid && phone.length < 9 && (fn.length < 2 || sn.length < 2)) return [];
+  var people = readAll_('Persons'), enrolls = readAll_('Enrollments');
+  var fac = {}; orgUnits().forEach(function (o) { fac[o.code] = o.name; });
+  var hits = people.map(function (p) {
+    var why = '';
+    if (nrc && String(p.MCC_NRC) === nrc) why = 'NRC';
+    else if (umid && String(p.umid).toUpperCase() === umid) why = 'UMID';
+    else if (phone.length >= 9 && String(p.MCC_PHONE).replace(/\D/g, '').slice(-9) === phone.slice(-9)) why = 'Phone';
+    else if (fn.length >= 2 && sn.length >= 2 && String(p.MCC_FIRST_NAME).toLowerCase().indexOf(fn) === 0 && String(p.MCC_SURNAME).toLowerCase().indexOf(sn) === 0) why = 'Name';
+    return why ? { p: p, why: why } : null;
+  }).filter(Boolean).slice(0, 8);
+  audit_(u, 'LOOKUP', 'person', '', JSON.stringify({ nrc: !!nrc, umid: umid, name: fn && sn ? fn + ' ' + sn : '', hits: hits.length }));
+  return hits.map(function (h) { var o = personSummary_(h.p, enrolls, fac); o.match = h.why; return o; });
+}
+
+// ------------------------------------------------------------------ KoBo / ODK
+var ODK_RELEVANT = {
+  MCC_US_DATE: "${MCC_DATING_METHOD}='US_LT24' or ${MCC_DATING_METHOD}='US_GE24'", MCC_US_GA_WK: "${MCC_DATING_METHOD}='US_LT24' or ${MCC_DATING_METHOD}='US_GE24'",
+  MCC_HB: "${MCC_HB_STATUS}='DONE'", MCC_BPG_DOSE: "${MCC_SYPH_RESULT}='REACTIVE'", MCC_SYPH_PARTNER_TX: "${MCC_SYPH_RESULT}='REACTIVE'",
+  MCC_SYPH_TEST_TYPE: "${MCC_SYPH_RESULT}='REACTIVE' or ${MCC_SYPH_RESULT}='NON_REACTIVE'",
+  MCC_HIV_RESULT: "${client_hiv}!='POS'", MCC_HIV_TEST_TYPE: "${client_hiv}!='POS' and ${MCC_HIV_RESULT}!=''",
+  MCC_DEWORM: "${MCC_GA_WK}>=13", MCC_FHR: "${MCC_GA_WK}>=20", MCC_FETAL_MOVEMENTS: "${MCC_GA_WK}>=20", MCC_PRESENTATION: "${MCC_GA_WK}>=28",
+  MCC_TD_PRIOR_LAST: "${MCC_TD_PRIOR}>0", MCC_IPTP_DOT: "${MCC_IPTP_STATUS}='GIVEN'",
+  MCC_SUPP_REGIMEN: "${MCC_SUPP_PRODUCT}='IFA' or ${MCC_SUPP_PRODUCT}='MMS' or ${MCC_SUPP_PRODUCT}='FA_ONLY'",
+  MCC_SUPP_TABS: "${MCC_SUPP_PRODUCT}='IFA' or ${MCC_SUPP_PRODUCT}='MMS' or ${MCC_SUPP_PRODUCT}='FA_ONLY'", MCC_SUPP_DAYS: "${MCC_SUPP_TABS}!=''",
+  MCC_REF_TO: "${MCC_REFERRED}='true'", MCC_REF_REASON: "${MCC_REFERRED}='true'", MCC_REF_FEEDBACK: "${MCC_REFERRED}='true'",
+  MCC_REF_FROM: "${MCC_FU_TYPE}='REFERRAL_IN' or ${MCC_FU_TYPE}='TRANSFER_IN'", MCC_REF_URGENCY: "${MCC_FU_TYPE}='REFERRAL_OUT'",
+  MCC_BBA: "${MCC_DEL_PLACE}='HOME' or ${MCC_DEL_PLACE}='EN_ROUTE'", MCC_PARTOGRAPH: "${MCC_DEL_PLACE}='THIS_FACILITY'",
+  MCC_MGSO4: "selected(${MCC_DEL_COMPLICATIONS},'ECLAMPSIA') or selected(${MCC_DEL_COMPLICATIONS},'SEVERE_PE')", MCC_TXA: "selected(${MCC_DEL_COMPLICATIONS},'PPH')",
+  MCC_MAT_DEATH_DATE: "${MCC_MAT_OUTCOME}='DIED'", MCC_MAT_DEATH_CAUSE: "${MCC_MAT_OUTCOME}='DIED'", MCC_MDSR_NOTIFIED: "${MCC_MAT_OUTCOME}='DIED'",
+  MCC_FP_METHOD: "${MCC_FP_COUNSELLED}='true'", MCC_HV_RETURN_DATE: "${MCC_HV_RETURNED}='true'",
+  MCC_EXIT_TRANSFER_TO: "${MCC_EXIT_OUTCOME}='TRANSFERRED_OUT'", MCC_EXIT_LAST_SEEN: "${MCC_EXIT_OUTCOME}='LTFU'",
+  MCC_ART_NO: "${MCC_HIV_STATUS}='POS'", MCC_MH_SCORE: "${MCC_MH_TOOL}!=''", MCC_US_FINDINGS: "${MCC_US_DONE}='true'",
+};
+var ODK_RELEVANT_REF = {
+  MCC_REFERRED: "${MCC_FU_TYPE}!='HOME_VISIT'", MCC_REF_TO: "${MCC_FU_TYPE}='REFERRAL_OUT' or ${MCC_FU_TYPE}='TRANSFER_OUT'",
+  MCC_REF_REASON: "${MCC_FU_TYPE}!='' and ${MCC_FU_TYPE}!='HOME_VISIT'", MCC_REF_FEEDBACK: "${MCC_FU_TYPE}='REFERRAL_OUT'",
+};
+var ODK_SECTION_RELEVANT = {
+  'C2 Calcium': 'false()', 'C3 IPTp-SP': '${MCC_GA_WK}>=13', 'C6 HIV care (PMTCT)': "${client_hiv}='POS' or ${MCC_HIV_RESULT}='POS'",
+  'D6 Baby 2': '${MCC_N_BABIES}>=2', 'D6 Baby 3': '${MCC_N_BABIES}>=3', 'G2 Home visit': "${MCC_FU_TYPE}='HOME_VISIT'",
+};
+var ODK_CONSTRAINT = {
+  MCC_WEIGHT: ['. >= 30 and . <= 150', 'Weight must be 30–150 kg'], MCC_HEIGHT: ['. >= 120 and . <= 200', 'Height must be 120–200 cm'],
+  MCC_MUAC: ['. >= 12 and . <= 45', 'MUAC must be 12–45 cm'], MCC_BP_SYS: ['. >= 60 and . <= 260', 'Systolic 60–260'],
+  MCC_BP_DIA: ['. >= 30 and . <= 160 and . < ${MCC_BP_SYS}', 'Diastolic 30–160 and below systolic'], MCC_HB: ['. >= 3 and . <= 20', 'Hb must be 3–20 g/dL'],
+  MCC_PARITY: ['. < ${MCC_GRAVIDA}', 'Parity must be lower than gravida'], MCC_FHR: ['. >= 60 and . <= 220', 'Check FHR'],
+  MCC_NRC: ["regex(., '^[0-9]{6}/[0-9]{2}/[0-9]$')", 'NRC must look like 123456/78/1'], MCC_N_BABIES: ['. >= 1 and . <= 3', '1 to 3 babies'],
+  MCC_TEMP: ['. >= 34 and . <= 43', 'Check temperature'],
+};
+function odkType_(f, m) {
+  var vt = m.vt;
+  if (m.os) return (vt === 'MULTI_TEXT' ? 'select_multiple ' : 'select_one ') + m.os;
+  return { BOOLEAN: 'select_one yes_no', TRUE_ONLY: 'select_one yes_only', DATE: 'date', AGE: 'date', DATETIME: 'dateTime', NUMBER: 'decimal',
+    INTEGER: 'integer', INTEGER_POSITIVE: 'integer', INTEGER_ZERO_OR_POSITIVE: 'integer', LONG_TEXT: 'text', PHONE_NUMBER: 'text', ORGANISATION_UNIT: 'text' }[vt] || 'text';
+}
+var ODK_CALC = {
+  MCC_EDD: "if(${MCC_DATING_METHOD}='LMP' or ${MCC_DATING_METHOD}='SFH', format-date(decimal-date-time(${lmp_used}) + 280, '%Y-%m-%d'), ${edd_us})",
+  MCC_GA_WK: "if(${edd_used}!='', int((280 - (decimal-date-time(${edd_used}) - decimal-date-time(${event_date}))) div 7), '')",
+  MCC_BOOK_TRIMESTER: "if(${MCC_GA_WK}='', '', if(${MCC_GA_WK} < 14, 'T1', if(${MCC_GA_WK} < 28, 'T2', 'T3')))",
+  MCC_ANC1_FIRST_TRI: "if(${MCC_GA_WK}!='' and ${MCC_GA_WK} < 12, 'true', 'false')",
+  MCC_BMI: "if(${MCC_WEIGHT}!='' and ${MCC_HEIGHT}!='', round(${MCC_WEIGHT} div ((${MCC_HEIGHT} div 100) * (${MCC_HEIGHT} div 100)), 1), '')",
+  MCC_ANAEMIA_GRADE: "if(${MCC_HB}='', '', if(${MCC_HB} >= 11, 'NONE', if(${MCC_HB} >= 10, 'MILD', if(${MCC_HB} >= 7, 'MODERATE', 'SEVERE'))))",
+  MCC_MUAC_CLASS: "if(${MCC_MUAC}='', '', if(${MCC_MUAC} < 21, 'SAM', if(${MCC_MUAC} < 23, 'MAM', 'NORMAL')))",
+  MCC_IPTP_DATE: "if(${MCC_IPTP_STATUS}='GIVEN', ${event_date}, '')",
+  MCC_SBA: "if(${MCC_ATTENDANT}='MIDWIFE' or ${MCC_ATTENDANT}='NURSE' or ${MCC_ATTENDANT}='CO' or ${MCC_ATTENDANT}='MO' or ${MCC_ATTENDANT}='OBGYN', 'true', if(${MCC_ATTENDANT}='', '', 'false'))",
+  MCC_B1_LBW: "if(${MCC_B1_BW}!='', if(${MCC_B1_BW} < 2500, 'true', 'false'), '')",
+  MCC_B2_LBW: "if(${MCC_B2_BW}!='', if(${MCC_B2_BW} < 2500, 'true', 'false'), '')",
+  MCC_B3_LBW: "if(${MCC_B3_BW}!='', if(${MCC_B3_BW} < 2500, 'true', 'false'), '')",
+  MCC_PNC_DAYS: "if(${client_delivery}!='', int(decimal-date-time(${event_date}) - decimal-date-time(${client_delivery})), '')",
+  MCC_PNC_WINDOW: "if(${MCC_PNC_DAYS}='', '', if(${MCC_PNC_DAYS} <= 2, 'W48H', if(${MCC_PNC_DAYS} >= 3 and ${MCC_PNC_DAYS} <= 7, 'D3_7', if(${MCC_PNC_DAYS} >= 8 and ${MCC_PNC_DAYS} <= 14, 'D8_14', if(${MCC_PNC_DAYS} >= 42 and ${MCC_PNC_DAYS} <= 49, 'W6', 'OUTSIDE')))))",
+  MCC_DEL_GA_WK: "if(${edd_used}!='', int((280 - (decimal-date-time(${edd_used}) - decimal-date-time(${event_date}))) div 7), '')",
+};
+/** XLSForm (survey / choices / settings as arrays) for KoBoToolbox or ODK. code = 'REG' or a stage code. */
+function odkForm(token, code) {
+  auth_(token, PII_ROLES);
+  var H = ['type', 'name', 'label', 'hint', 'required', 'relevant', 'constraint', 'constraint_message', 'calculation', 'appearance', 'default', 'choice_filter', 'read_only'];
+  var rows = [H], used = {};
+  var add = function (o) { rows.push(H.map(function (k) { return o[k] === undefined ? '' : String(o[k]); })); };
+  var reg = code === 'REG';
+  var st = reg ? { code: 'REG', name: 'Client registration', sections: MCC_META.registration } : stage_(code);
+  add({ type: 'start', name: 'start' }); add({ type: 'end', name: 'end' }); add({ type: 'deviceid', name: 'deviceid' });
+  add({ type: 'calculate', name: 'mcc_form', calculation: "'" + st.code + "'" });
+  add({ type: 'text', name: 'facility_code', label: 'Facility code (where you are working)', hint: 'Exactly as in the platform org unit list, e.g. LUM-FAC01', required: 'yes',
+    default: '', calculation: '' });
+  if (reg) {
+    add({ type: 'note', name: 'reg_note', label: 'Registers a woman (or updates her if the NRC is already registered). The platform assigns the UMID.' });
+  } else {
+    add({ type: 'begin_group', name: 'find', label: 'Find the client', appearance: 'field-list' });
+    add({ type: 'select_one lookup_by', name: 'lookup_by', label: 'Find client by', required: 'yes', appearance: 'horizontal' });
+    add({ type: 'text', name: 'nrc_q', label: 'NRC number', relevant: "${lookup_by}='nrc'", constraint: "regex(., '^[0-9]{6}/[0-9]{2}/[0-9]$')", constraint_message: 'NRC must look like 123456/78/1' });
+    add({ type: 'barcode', name: 'umid_scan', label: 'Scan the QR / barcode on the ANC card', relevant: "${lookup_by}='scan'" });
+    add({ type: 'text', name: 'umid_typed', label: 'Unique Maternal ID (UMID)', relevant: "${lookup_by}='umid'" });
+    add({ type: 'text', name: 'name_q', label: 'Type part of her name (as registered, e.g. Banda)', relevant: "${lookup_by}='name'" });
+    add({ type: 'select_one_from_file clients.csv', name: 'client_pick', label: 'Select the client', relevant: "${lookup_by}='name' and ${name_q}!=''", choice_filter: 'contains(label, ${name_q})', appearance: 'minimal' });
+    add({ type: 'calculate', name: 'umid', calculation: "if(${lookup_by}='nrc', pulldata('clients', 'name', 'nrc', ${nrc_q}), if(${lookup_by}='scan', ${umid_scan}, if(${lookup_by}='umid', ${umid_typed}, ${client_pick})))" });
+    [['client_name', 'full_name'], ['client_facility', 'facility'], ['client_dob', 'dob'], ['client_hiv', 'hiv_status'], ['client_edd', 'edd'], ['client_lmp', 'lmp'],
+      ['client_active', 'active'], ['client_village', 'village'], ['client_delivery', 'delivery_date'], ['client_reg_no', 'anc_reg_no'], ['client_risk', 'risk']]
+      .forEach(function (x) { add({ type: 'calculate', name: x[0], calculation: "pulldata('clients', '" + x[1] + "', 'name', ${umid})" }); });
+    add({ type: 'note', name: 'client_card', relevant: "${client_name}!=''",
+      label: '**${client_name}** · UMID ${umid} · Facility ${client_facility} · DOB ${client_dob} · Village ${client_village} · ANC no. ${client_reg_no} · HIV ${client_hiv} · EDD ${client_edd} · Risk: ${client_risk}' });
+    add({ type: 'note', name: 'not_found', relevant: "${lookup_by}!='' and ${umid}!='' and ${client_name}=''",
+      label: 'This UMID is not in the client list on this device. Update the clients.csv media file, or check the ID.' });
+    add({ type: 'select_one yes_no', name: 'confirm_client', label: 'Is this the right client?', required: 'yes', relevant: "${umid}!=''", constraint: ".='true'", constraint_message: 'Search again until the right client is shown.' });
+    add({ type: 'end_group', name: '' });
+    add({ type: 'date', name: 'event_date', label: code === 'DEL' ? 'Delivery date' : 'Visit date', required: 'yes', default: 'today()', constraint: '. <= today()', constraint_message: 'Cannot be in the future' });
+    if (code === 'ANC1') {
+      add({ type: 'date', name: 'lmp', label: 'Date of LMP (or ultrasound-derived LMP) for this pregnancy', required: "${client_active}!='yes'", relevant: "${client_active}!='yes'",
+        hint: 'Starts a new pregnancy record. Leave as is if she already has an active pregnancy.' });
+      add({ type: 'calculate', name: 'lmp_used', calculation: "if(${lmp}!='', ${lmp}, ${client_lmp})" });
+      add({ type: 'date', name: 'edd_us', label: 'EDD from the ultrasound report', relevant: "${MCC_DATING_METHOD}='US_LT24' or ${MCC_DATING_METHOD}='US_GE24'", required: 'yes' });
+    }
+    add({ type: 'calculate', name: 'edd_used', calculation: code === 'ANC1' ? '${MCC_EDD}' : '${client_edd}' });
+  }
+  st.sections.forEach(function (sec, i) {
+    var fields = sec.fields.filter(function (f) { return !/^MCC_(UMID|CUR_|DEFAULTER|SMS_PHONE|ADOLESCENT)/.test(f) && !/_TEI_LINKED$/.test(f); });
+    if (!fields.length) return;
+    add({ type: 'begin_group', name: 'g' + (i + 1), label: sec.name.replace(/^[A-Z]\d+\s/, ''), relevant: ODK_SECTION_RELEVANT[sec.name] || '', appearance: 'field-list' });
+    fields.forEach(function (f) {
+      var m = MCC_META.fields[f], c = ODK_CONSTRAINT[f] || [];
+      if (m.os) used[m.os] = true;
+      if (m.mand === 'Auto') {
+        if (ODK_CALC[f]) add({ type: 'calculate', name: f, calculation: ODK_CALC[f] });
+        return;
+      }
+      var rel = (code === 'REF' && ODK_RELEVANT_REF[f]) || ODK_RELEVANT[f] || '';
+      var bm = f.match(/^MCC_B(\d)_(\w+)$/);
+      if (bm && ['SEX', 'OUTCOME', 'BW'].indexOf(bm[2]) < 0) rel = "${MCC_B" + bm[1] + "_OUTCOME}='LIVE'" + (bm[2] === 'KMC' ? " and ${MCC_B" + bm[1] + "_BW} < 2500" : '') + (bm[2] === 'ARV_PROPH' ? " and (${client_hiv}='POS' or ${MCC_HIV_RESULT}='POS')" : '');
+      if (code === 'ANC1' && f === 'MCC_EDD') return;
+      add({ type: odkType_(f, m), name: f, label: m.name, hint: m.vt === 'ORGANISATION_UNIT' ? 'Facility code' : '', required: m.mand === 'Yes' ? 'yes' : '',
+        relevant: rel, constraint: c[0] || (m.vt === 'INTEGER_POSITIVE' ? '. >= 1' : m.vt === 'INTEGER_ZERO_OR_POSITIVE' ? '. >= 0' : ''), constraint_message: c[1] || '',
+        appearance: m.vt === 'LONG_TEXT' ? 'multiline' : (m.os && (MCC_META.optionSets[m.os] || []).length > 6 && m.vt !== 'MULTI_TEXT' ? 'minimal' : '') });
+    });
+    if (code === 'ANC1' && sec.fields.indexOf('MCC_EDD') >= 0) add({ type: 'calculate', name: 'MCC_EDD', calculation: ODK_CALC.MCC_EDD });
+    add({ type: 'end_group', name: '' });
+  });
+  // Drop any skip/constraint clause that points at a field this form does not have (keeps the form valid).
+  var names = {}; rows.slice(1).forEach(function (r) { if (r[1]) names[r[1]] = true; });
+  var ok = function (expr) { return !(String(expr).match(/\$\{(\w+)\}/g) || []).some(function (m) { return !names[m.slice(2, -1)]; }); };
+  rows.slice(1).forEach(function (r) { [5, 6, 4].forEach(function (i) { if (r[i] && r[i] !== 'yes' && !ok(r[i])) { r[i] = ''; if (i === 6) r[7] = ''; } }); });
+  var choices = [['list_name', 'name', 'label']];
+  choices.push(['yes_no', 'true', 'Yes'], ['yes_no', 'false', 'No'], ['yes_only', 'true', 'Yes']);
+  [['nrc', 'NRC'], ['scan', 'Scan card'], ['umid', 'Type UMID'], ['name', 'Name']].forEach(function (x) { choices.push(['lookup_by', x[0], x[1]]); });
+  Object.keys(used).forEach(function (os) { (MCC_META.optionSets[os] || []).forEach(function (o) { choices.push([os, o[0], o[1]]); }); });
+  var ver = Utilities.formatDate(new Date(), 'Africa/Lusaka', 'yyyy-MM-dd').replace(/-/g, '') + '01';
+  return { file: 'MCC_' + st.code + '_xlsform.xlsx', title: 'MCC – ' + st.name,
+    sheets: { survey: rows, choices: choices, settings: [['form_title', 'form_id', 'version', 'default_language'], ['MCC – ' + st.name, 'mcc_' + st.code.toLowerCase(), ver, 'English (en)']] } };
+}
+/** clients.csv media file for pulldata() / select_one_from_file. Contains personal data: keep it on project devices only. */
+function odkClients(token) {
+  var u = auth_(token, ENTRY_ROLES); var sc = scope_(u);
+  var enrolls = readAll_('Enrollments'), del = {}, risk = {};
+  readAll_('EV_DEL').forEach(function (e) { del[e.enrollment_id] = String(e.MCC_DELIVERY_DT || e.event_date).slice(0, 10); });
+  ['EV_ANC1', 'EV_ANCFU'].forEach(function (n) { readAll_(n).forEach(function (e) { if (String(e.MCC_HIGH_RISK) === 'true') risk[e.enrollment_id] = e.MCC_RISK_REASONS; }); });
+  var rows = [['name', 'label', 'nrc', 'full_name', 'facility', 'dob', 'village', 'phone', 'hiv_status', 'anc_reg_no', 'active', 'lmp', 'edd', 'delivery_date', 'risk']];
+  readAll_('Persons').filter(function (p) { return sc.indexOf(String(p.org_unit)) >= 0; }).forEach(function (p) {
+    var act = enrolls.filter(function (e) { return e.tei_id === p.tei_id && e.status === 'ACTIVE'; })[0];
+    var full = [p.MCC_FIRST_NAME, p.MCC_OTHER_NAMES, p.MCC_SURNAME].filter(String).join(' ');
+    rows.push([p.umid, full + ' · ' + p.MCC_DOB + ' · ' + p.MCC_VILLAGE + ' · ' + p.umid, p.MCC_NRC, full, p.org_unit, p.MCC_DOB, p.MCC_VILLAGE, p.MCC_PHONE,
+      p.MCC_HIV_STATUS, p.MCC_ANC_REG_NO, act ? 'yes' : 'no', act ? act.lmp : '', act ? isoDate_(new Date(new Date(act.lmp).getTime() + 280 * 86400000)) : '',
+      act ? (del[act.enrollment_id] || '') : '', act ? (risk[act.enrollment_id] || '') : '']);
+  });
+  audit_(u, 'EXPORT', 'odk_clients', '', (rows.length - 1) + ' clients');
+  return rows;
+}
+function adminIngestKey(token, regenerate) {
+  auth_(token, ['ADMIN']);
+  var props = PropertiesService.getScriptProperties();
+  if (regenerate || !props.getProperty('INGEST_KEY')) props.setProperty('INGEST_KEY', Utilities.getUuid().replace(/-/g, ''));
+  var key = props.getProperty('INGEST_KEY'), base = ScriptApp.getService().getUrl();
+  return { key: key, url: props.getProperty('RUNTIME') === 'railway' ? base + '/odk/submit/' + key : base + '?key=' + key };
+}
+/** Receives one KoBoToolbox REST-service submission (JSON) or ODK record and stores it. */
+function ingestSubmission(key, sub) {
+  var want = PropertiesService.getScriptProperties().getProperty('INGEST_KEY');
+  if (!want || key !== want) throw new Error('Invalid key.');
+  var v = {};
+  Object.keys(sub || {}).forEach(function (k) { var name = k.split('/').pop(); if (name.charAt(0) !== '_' || name === '_uuid') v[name] = sub[k]; });
+  var iid = String(sub['meta/instanceID'] || sub._uuid || v.instanceID || '').replace('uuid:', '');
+  var form = String(v.mcc_form || '');
+  var log = function (status, msg, umid) { append_('Submissions', { received_at: now_(), instance_id: iid, form: form, umid: umid || v.umid || '', status: status, message: String(msg || '').slice(0, 500) }); };
+  if (iid && readAll_('Submissions').some(function (r) { return r.instance_id === iid && r.status === 'OK'; })) return { status: 'duplicate' };
+  var sys = { user_id: 'odk', email: 'kobo/odk ingest', role: 'ADMIN', org_unit: '' };
+  try {
+    var allowed = {}, multi = {};
+    var secs = form === 'REG' ? MCC_META.registration : stage_(form).sections;
+    secs.forEach(function (s) { s.fields.forEach(function (f) { allowed[f] = true; if (MCC_META.fields[f].vt === 'MULTI_TEXT') multi[f] = true; }); });
+    var vals = {};
+    Object.keys(v).forEach(function (k) { if (allowed[k] && v[k] !== '' && v[k] !== null && v[k] !== undefined) vals[k] = multi[k] ? String(v[k]).trim().split(/\s+/).join(',') : String(v[k]); });
+    var fc = String(v.facility_code || '').trim();
+    if (form === 'REG') {
+      var ex = vals.MCC_NRC ? findBy_('Persons', 'MCC_NRC', vals.MCC_NRC) : null;
+      var p = savePerson_(sys, { tei_id: ex ? ex.tei_id : '', org_unit: ex ? ex.org_unit : fc, values: Object.assign({}, ex || {}, vals) });
+      log('OK', ex ? 'Updated existing client' : 'Registered', p.umid);
+      return { status: 'ok', umid: p.umid };
+    }
+    var umid = String(v.umid || '').trim();
+    var person = findBy_('Persons', 'umid', umid);
+    if (!person) throw new Error('No client with UMID ' + umid);
+    var act = readAll_('Enrollments').filter(function (e) { return e.tei_id === person.tei_id && e.status === 'ACTIVE'; })[0];
+    var date = String(v.event_date || '').slice(0, 10) || isoDate_(new Date());
+    if (!act) {
+      if (form !== 'ANC1' || !v.lmp) throw new Error('No active pregnancy. Submit ANC 1 with the date of LMP first.');
+      act = enroll_(sys, person.tei_id, { enrollment_date: date, lmp: String(v.lmp).slice(0, 10), org_unit: fc || person.org_unit });
+    }
+    var ev = saveEvent_(sys, { stage: form, enrollment_id: act.enrollment_id, event_date: date, org_unit: fc || act.org_unit, status: 'COMPLETED', values: vals,
+      hidden: Object.keys(allowed).filter(function (f) { return !(f in vals); }) }); // the form's own skip logic already decided what applies
+    log('OK', 'Saved ' + form, umid);
+    return { status: 'ok', event_id: ev.event_id };
+  } catch (e) {
+    log('ERROR', e.message);
+    throw e;
+  }
+}
+/** Apps Script version: KoBo REST service URL = <web app URL>?key=<ingest key> */
+function doPost(e) {
+  var out;
+  try { out = ingestSubmission(e.parameter.key, JSON.parse(e.postData.contents)); }
+  catch (err) { out = { status: 'error', message: err.message }; }
+  return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
 }

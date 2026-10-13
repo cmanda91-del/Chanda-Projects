@@ -82,7 +82,7 @@ function enterApp() {
   $$('[data-need]').forEach(function (x) { x.hidden = !can(x.dataset.need); });
   api('myOrgUnits', S.token).then(function (ous) {
     S.ous = ous;
-    [$('#cap-ou'), $('#up-ou')].forEach(function (s) { fillOuSelect(s, ous, false); });
+    [$('#cap-ou'), $('#up-ou')].forEach(function (s) { fillOuSelect(s, ous, false); if (S.user.org_unit && ous.some(function (o) { return o.code === S.user.org_unit; })) s.value = S.user.org_unit; });
     show('home');
   });
 }
@@ -102,6 +102,7 @@ function show(v) {
   if (v === 'upload') loadUploads();
   if (v === 'browse') loadTables();
   if (v === 'admin') loadAdmin();
+  if (v === 'odk') loadOdk();
   window.scrollTo(0, 0);
 }
 $$('.nav').forEach(function (a) { a.addEventListener('click', function (e) { e.preventDefault(); show(a.dataset.view); }); });
@@ -254,7 +255,7 @@ function inputFor(code, value, onChange) {
     var type = { DATE: 'date', DATETIME: 'datetime-local', NUMBER: 'number', INTEGER: 'number', INTEGER_POSITIVE: 'number', INTEGER_ZERO_OR_POSITIVE: 'number', PHONE_NUMBER: 'tel' }[vt] || 'text';
     if (vt === 'LONG_TEXT') node = el('textarea', { rows: 2, readonly: auto, oninput: fire });
     else node = el('input', { type: type, readonly: auto, step: vt === 'NUMBER' ? 'any' : null, min: /POSITIVE/.test(vt) ? (vt === 'INTEGER_POSITIVE' ? 1 : 0) : null, oninput: fire });
-    node.value = has(value) ? String(value).replace(' ', 'T') : ''; read = function () { return node.value; };
+    node.value = has(value) ? (vt === 'DATETIME' ? String(value).replace(' ', 'T').slice(0, 16) : String(value)) : ''; read = function () { return node.value; };
   }
   return { node: node, read: read, set: function (v) {
     v = has(v) ? String(v) : '';
@@ -290,7 +291,7 @@ function openForm(opts) {
     var body = el('div', { class: 'sec-body' });
     s.fields.forEach(function (f) {
       var m = META.fields[f];
-      var inp = inputFor(f, values[f], function (code, v) { S.form.values[code] = v; recompute(); });
+      var inp = inputFor(f, values[f], function (code, v) { S.form.values[code] = v; recompute(); if (reg && !opts.tei_id && LOOKUP_FIELDS.indexOf(code) >= 0) scheduleLookup(); });
       var msg = el('div', { class: 'fmsg' });
       var w = el('div', { class: 'fld' + (m.mand === 'Auto' ? ' auto' : ''), 'data-code': f }, [
         el('label', null, [el('span', null, [m.name, m.mand === 'Yes' ? el('span', { class: 'req', text: ' *' }) : null, m.mand === 'Auto' ? el('span', { class: 'muted', text: ' (calculated)' }) : null]), inp.node]), msg]);
@@ -301,10 +302,89 @@ function openForm(opts) {
     S.form.secs[s.name] = fs; form.append(fs);
   });
   $('#form-complete').hidden = reg; $('#form-save').textContent = reg ? 'Save' : 'Save draft';
+  $('#form-lookup').replaceChildren();
+  if (reg && !opts.tei_id) $('#form-lookup').append(el('div', { class: 'info', text: 'Enter the NRC (or first name and surname, or phone). If she is already registered anywhere, her UMID, facility and details load automatically so you only update what changed.' }));
+  if (reg && opts.tei_id && opts.loaded) $('#form-lookup').append(el('div', { class: 'info', text: 'Existing client loaded (' + (opts.values.umid || '') + ', ' + (opts.values.org_unit || '') + '). Update what changed and save, then add today\'s visit from her record.' }));
   $('#form-msg').textContent = '';
   recompute();
 }
 $('#form-back').addEventListener('click', function () { if (S.form && !S.form.reg || (S.form && S.form.opts.tei_id)) openPerson(S.person.person.tei_id, S.enrollment && S.enrollment.enrollment_id); else show('capture'); });
+
+// ---------- find existing client while registering ----------
+var LOOKUP_FIELDS = ['MCC_NRC', 'MCC_FIRST_NAME', 'MCC_SURNAME', 'MCC_PHONE'];
+var lookupTimer = null, lookupSeq = 0;
+function scheduleLookup() { clearTimeout(lookupTimer); lookupTimer = setTimeout(runLookup, 450); }
+function runLookup() {
+  var v = S.form.values, q = {};
+  if (/^[0-9]{6}\/[0-9]{2}\/[0-9]$/.test(v.MCC_NRC || '')) q.nrc = v.MCC_NRC;
+  if ((v.MCC_FIRST_NAME || '').length >= 2 && (v.MCC_SURNAME || '').length >= 2) { q.first = v.MCC_FIRST_NAME; q.surname = v.MCC_SURNAME; }
+  if ((v.MCC_PHONE || '').replace(/\D/g, '').length >= 9) q.phone = v.MCC_PHONE;
+  if (!Object.keys(q).length) return;
+  var seq = ++lookupSeq, box = $('#form-lookup');
+  api('lookupClient', S.token, q).then(function (hits) {
+    if (seq !== lookupSeq || !S.form || !S.form.reg) return;
+    box.replaceChildren();
+    if (!hits.length) { box.append(el('div', { class: 'info', text: 'No existing client matches. Continue to register her as new.' })); return; }
+    var exact = hits.filter(function (h) { return h.match === 'NRC'; })[0];
+    if (exact) { loadExisting(exact.tei_id); return; }
+    box.append(el('div', { class: 'risk', text: hits.length + ' possible existing client' + (hits.length > 1 ? 's' : '') + '. Load her record to avoid a duplicate:' }));
+    hits.forEach(function (h) { box.append(clientCard(h)); });
+  }).catch(function (e) { box.replaceChildren(el('div', { class: 'msg', text: e.message })); });
+}
+function clientCard(h) {
+  var a = h.active;
+  return el('div', { class: 'card match' }, [
+    el('div', { class: 'bar', style: 'margin:0' }, [el('b', { class: 'grow', text: h.name + ' · ' + h.umid }), el('span', { class: 'pill', text: 'Matched on ' + h.match })]),
+    el('div', { class: 'person-head' }, [['NRC', h.nrc], ['DOB', h.dob], ['Facility', h.facility_name], ['Village', h.village], ['Phone', h.phone], ['HIV', h.hiv_status], ['ANC no.', h.anc_reg_no],
+      ['Pregnancy', a ? 'Active · EDD ' + a.edd : (h.pregnancies ? 'None active (' + h.pregnancies + ' before)' : 'Not enrolled')],
+      ['Last visit', a && a.last ? a.last.stage + ', ' + a.last.date : '—']].map(function (x) { return el('div', null, [el('span', { text: x[0] }), x[1] || '—']); })),
+    a && a.last && String(a.last.risk) === 'true' ? el('div', { class: 'risk', style: 'margin:8px 0 0', text: 'High risk: ' + a.last.reasons }) : null,
+    el('div', { class: 'bar' }, [el('button', { class: 'btn primary', type: 'button', text: 'Load and update details', onclick: function () { loadExisting(h.tei_id); } }),
+      el('button', { class: 'btn', type: 'button', text: 'Open record to add a visit', onclick: function () { openPerson(h.tei_id); } })])]);
+}
+function loadExisting(teiId) {
+  api('getPerson', S.token, teiId).then(function (d) {
+    S.person = d;
+    var act = d.enrollments.filter(function (e) { return e.status === 'ACTIVE'; })[0];
+    S.enrollment = act || d.enrollments[d.enrollments.length - 1] || null;
+    openForm({ kind: 'reg', tei_id: d.person.tei_id, values: d.person, org_unit: d.person.org_unit, loaded: true });
+    toast('Existing client found: ' + d.person.umid + ' (' + d.person.org_unit + '). Details loaded.');
+  }).catch(function (e) { toast(e.message); });
+}
+
+// ---------- KoBo / ODK ----------
+function loadOdk() {
+  var box = $('#odk-forms');
+  if (!box.childElementCount) {
+    [{ code: 'REG', name: 'Client registration' }].concat(META.stages).forEach(function (s) {
+      box.append(el('button', { class: 'btn', text: '⬇ ' + s.name, onclick: function (e) { downloadXlsForm(s.code, e.target); } }));
+    });
+  }
+  $$('#v-odk [data-need]').forEach(function (x) { x.hidden = !can(x.dataset.need); });
+  if (can('admin')) api('adminIngestKey', S.token, false).then(function (r) { $('#odk-url').value = r.url; }).catch(function (e) { toast(e.message); });
+}
+function downloadXlsForm(code, btn) {
+  if (!window.XLSX) { toast('The spreadsheet library did not load. Check the connection and reload the page.'); return; }
+  busy(btn, true);
+  api('odkForm', S.token, code).then(function (f) {
+    var wb = XLSX.utils.book_new();
+    ['survey', 'choices', 'settings'].forEach(function (n) { XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(f.sheets[n]), n); });
+    XLSX.writeFile(wb, f.file);
+  }).catch(function (e) { toast(e.message); }).then(function () { busy(btn, false); });
+}
+$('#odk-clients').addEventListener('click', function () {
+  var b = this; busy(b, true);
+  api('odkClients', S.token).then(function (rows) { downloadText('clients.csv', rows.map(csvRow).join('\r\n'), 'text/csv'); toast((rows.length - 1) + ' clients exported.'); })
+    .catch(function (e) { toast(e.message); }).then(function () { busy(b, false); });
+});
+$('#odk-copy').addEventListener('click', function () {
+  var i = $('#odk-url'); i.select();
+  (navigator.clipboard ? navigator.clipboard.writeText(i.value) : Promise.reject()).then(function () { toast('Copied.'); }).catch(function () { document.execCommand('copy'); toast('Copied.'); });
+});
+$('#odk-regen').addEventListener('click', function () {
+  if (!window.confirm('Create a new key? Submissions sent with the old URL will be rejected until you update KoBo.')) return;
+  api('adminIngestKey', S.token, true).then(function (r) { $('#odk-url').value = r.url; toast('New endpoint URL created. Update it in KoBo.'); }).catch(function (e) { toast(e.message); });
+});
 
 // ---------- rules (client-side mirror of the design's program rules) ----------
 function recompute() {
