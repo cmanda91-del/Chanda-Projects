@@ -1,0 +1,7 @@
+{
+  "name": "mcc-health-platform",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "bun build-page.ts && bun server.ts" },
+  "dependencies": { "xlsx": "0.18.5" }
+}

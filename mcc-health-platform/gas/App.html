@@ -1,0 +1,712 @@
+<script>
+(function () {
+'use strict';
+var META = window.MCC_META;
+var S = { token: null, user: null, ous: [], allOus: [], person: null, enrollment: null, form: null, browse: { offset: 0, total: 0 } };
+var $ = function (s, r) { return (r || document).querySelector(s); };
+var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+
+function el(tag, attrs, kids) {
+  var e = document.createElement(tag);
+  if (attrs) Object.keys(attrs).forEach(function (k) {
+    var v = attrs[k];
+    if (v === undefined || v === null || v === false) return;
+    if (k === 'text') e.textContent = v;
+    else if (k === 'class') e.className = v;
+    else if (k.slice(0, 2) === 'on') e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v === true ? '' : v);
+  });
+  (kids || []).forEach(function (c) { if (c !== null && c !== undefined) e.append(c.nodeType ? c : document.createTextNode(String(c))); });
+  return e;
+}
+function toast(msg) { var t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(function () { t.classList.remove('show'); }, 3200); }
+function store(k, v) { try { if (v === undefined) return sessionStorage.getItem(k); if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) { return null; } }
+
+// ---------- server calls ----------
+function api(fn) {
+  var args = Array.prototype.slice.call(arguments, 1);
+  return new Promise(function (resolve, reject) {
+    google.script.run.withSuccessHandler(resolve).withFailureHandler(function (err) {
+      var m = (err && err.message) || String(err);
+      if (m.indexOf('SESSION_EXPIRED') >= 0) { signOutLocal(); showAuth('login', 'Your session ended. Please sign in again.'); }
+      reject(new Error(m.replace(/^Error:\s*/, '').replace(/^Exception:\s*/, '')));
+    })[fn].apply(null, args);
+  });
+}
+function busy(btn, on) { if (btn) { btn.disabled = on; } }
+
+// ---------- dates ----------
+function iso(d) { var z = new Date(d.getTime() - d.getTimezoneOffset() * 60000); return z.toISOString().slice(0, 10); }
+function today() { return iso(new Date()); }
+function addDays(s, n) { var d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + n); return iso(d); }
+function daysBetween(a, b) { return Math.round((new Date(String(b).slice(0, 10) + 'T00:00:00') - new Date(String(a).slice(0, 10) + 'T00:00:00')) / 86400000); }
+function yearsBetween(a, b) { var x = new Date(a), y = new Date(b); var n = y.getFullYear() - x.getFullYear(); if (y.getMonth() < x.getMonth() || (y.getMonth() === x.getMonth() && y.getDate() < x.getDate())) n--; return n; }
+function has(v) { return v !== undefined && v !== null && String(v) !== ''; }
+function num(v) { return has(v) ? Number(v) : NaN; }
+
+// ================= AUTH =================
+function showAuth(which, msg) {
+  $('#shell').hidden = true; $('#auth').hidden = false;
+  $('#login-form').hidden = which !== 'login'; $('#signup-form').hidden = which !== 'signup'; $('#pending').hidden = which !== 'pending';
+  var m = $('#auth-msg'); m.textContent = msg || ''; m.className = 'msg';
+  if (which === 'signup') fillOuSelect($('#signup-form [name=org_unit]'), S.allOus, true);
+}
+$$('[data-go]').forEach(function (a) { a.addEventListener('click', function (e) { e.preventDefault(); showAuth(a.dataset.go); }); });
+$('#login-form').addEventListener('submit', function (e) {
+  e.preventDefault(); var f = e.target, b = f.querySelector('button'); busy(b, true); $('#auth-msg').textContent = '';
+  api('login', f.email.value, f.password.value).then(function (r) {
+    S.token = r.token; S.user = r.user; store('mcc_token', r.token); f.password.value = ''; enterApp();
+  }).catch(function (err) { $('#auth-msg').textContent = err.message; }).then(function () { busy(b, false); });
+});
+$('#signup-form').addEventListener('submit', function (e) {
+  e.preventDefault(); var f = e.target, b = f.querySelector('button');
+  if (f.password.value !== f.password2.value) { $('#auth-msg').textContent = 'Passwords do not match.'; return; }
+  busy(b, true);
+  api('signup', { name: f.name.value, email: f.email.value, phone: f.phone.value, org_unit: f.org_unit.value, role: f.role.value, password: f.password.value })
+    .then(function (r) { f.reset(); if (r.status === 'APPROVED') showAuth('login', 'Administrator account created. Sign in.'); else showAuth('pending'); })
+    .catch(function (err) { $('#auth-msg').textContent = err.message; }).then(function () { busy(b, false); });
+});
+function signOutLocal() { S.token = null; S.user = null; store('mcc_token', null); }
+$('#logout').addEventListener('click', function () { var t = S.token; signOutLocal(); api('logout', t).catch(function () {}); showAuth('login', 'Signed out.'); });
+
+function can(what) {
+  var r = S.user && S.user.role;
+  if (what === 'admin') return r === 'ADMIN';
+  if (what === 'entry') return ['ADMIN', 'CLINICIAN', 'DATA_ASSOCIATE'].indexOf(r) >= 0;
+  if (what === 'pii') return ['ADMIN', 'CLINICIAN', 'DATA_ASSOCIATE', 'DISTRICT_VIEWER'].indexOf(r) >= 0;
+  return false;
+}
+function enterApp() {
+  $('#auth').hidden = true; $('#shell').hidden = false;
+  $('#who').textContent = S.user.name + ' · ' + S.user.role.replace('_', ' ').toLowerCase();
+  $$('[data-need]').forEach(function (x) { x.hidden = !can(x.dataset.need); });
+  api('myOrgUnits', S.token).then(function (ous) {
+    S.ous = ous;
+    [$('#cap-ou'), $('#up-ou')].forEach(function (s) { fillOuSelect(s, ous, false); });
+    show('home');
+  });
+}
+function fillOuSelect(sel, ous, placeholder) {
+  sel.replaceChildren();
+  if (placeholder) sel.append(el('option', { value: '', text: 'Select…' }));
+  ous.slice().sort(function (a, b) { return a.level - b.level || String(a.name).localeCompare(b.name); })
+    .forEach(function (o) { sel.append(el('option', { value: o.code, text: ' '.repeat(Math.max(0, (o.level - 1) * 2)) + o.name + ' (' + o.code + ')' })); });
+}
+
+// ================= NAV =================
+function show(v) {
+  $$('.view').forEach(function (x) { x.hidden = x.id !== 'v-' + v; });
+  $$('.nav').forEach(function (a) { a.classList.toggle('active', a.dataset.view === v); });
+  $('#sidenav').classList.remove('open');
+  if (v === 'home') loadHome();
+  if (v === 'upload') loadUploads();
+  if (v === 'browse') loadTables();
+  if (v === 'admin') loadAdmin();
+  window.scrollTo(0, 0);
+}
+$$('.nav').forEach(function (a) { a.addEventListener('click', function (e) { e.preventDefault(); show(a.dataset.view); }); });
+$('#menu-toggle').addEventListener('click', function () { $('#sidenav').classList.toggle('open'); });
+
+// ================= HOME =================
+function loadHome() {
+  $('#tiles').replaceChildren(el('div', { class: 'muted', text: 'Loading…' }));
+  api('homeStats', S.token).then(function (s) {
+    $('#home-sub').textContent = 'Figures for your assigned org units. Month: ' + s.month + '.';
+    var t = [['Women registered', s.persons], ['Active pregnancies', s.activeEnrollments], ['Events this month', s.eventsThisMonth], ['High-risk bookings', s.highRiskBookings, 'alert'], ['Files uploaded', s.uploads]];
+    if (s.pendingUsers !== null) t.push(['Accounts awaiting approval', s.pendingUsers, s.pendingUsers ? 'alert' : '']);
+    $('#tiles').replaceChildren.apply($('#tiles'), t.map(function (x) { return el('div', { class: 'tile ' + (x[2] || '') }, [el('b', { text: Number(x[1]).toLocaleString() }), el('span', { text: x[0] })]); }));
+  }).catch(function (e) { $('#tiles').replaceChildren(el('div', { class: 'msg', text: e.message })); });
+}
+
+// ================= CAPTURE =================
+$('#cap-search').addEventListener('click', doSearch);
+$('#cap-q').addEventListener('keydown', function (e) { if (e.key === 'Enter') doSearch(); });
+function doSearch() {
+  $('#cap-person').replaceChildren();
+  var out = $('#cap-results'); out.replaceChildren(el('p', { class: 'muted', text: 'Searching…' }));
+  api('searchPersons', S.token, $('#cap-q').value).then(function (rows) {
+    if (!rows.length) { out.replaceChildren(el('div', { class: 'info', text: 'No match. Check spelling, try phone or NRC, then register her if she is new.' })); return; }
+    var tb = el('tbody');
+    rows.forEach(function (p) {
+      tb.append(el('tr', { class: 'click', onclick: function () { openPerson(p.tei_id); } }, [
+        el('td', { text: p.umid }), el('td', { text: (p.MCC_FIRST_NAME || '') + ' ' + (p.MCC_SURNAME || '') }), el('td', { text: p.MCC_DOB }),
+        el('td', { text: p.MCC_VILLAGE }), el('td', { text: p.MCC_PHONE }), el('td', { text: p.MCC_CUR_EDD }), el('td', { text: p.org_unit })]));
+    });
+    out.replaceChildren(el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['UMID', 'Name', 'DOB', 'Village', 'Phone', 'Current EDD', 'Org unit'].map(function (h) { return el('th', { text: h }); }))]), tb])]));
+  }).catch(function (e) { out.replaceChildren(el('div', { class: 'msg', text: e.message })); });
+}
+$('#cap-new').addEventListener('click', function () { openForm({ kind: 'reg', org_unit: $('#cap-ou').value }); });
+
+function openPerson(teiId, keepEnrollment) {
+  show('capture'); $('#cap-results').replaceChildren();
+  var box = $('#cap-person'); box.replaceChildren(el('p', { class: 'muted', text: 'Loading…' }));
+  return api('getPerson', S.token, teiId).then(function (d) {
+    S.person = d;
+    var active = d.enrollments.filter(function (e) { return e.status === 'ACTIVE'; })[0];
+    S.enrollment = (keepEnrollment && d.enrollments.filter(function (e) { return e.enrollment_id === keepEnrollment; })[0]) || active || d.enrollments[d.enrollments.length - 1] || null;
+    renderPerson();
+  }).catch(function (e) { box.replaceChildren(el('div', { class: 'msg', text: e.message })); });
+}
+function stageName(c) { return (META.stages.filter(function (s) { return s.code === c; })[0] || {}).name || c; }
+function hivPos(extra) {
+  var p = S.person.person;
+  if (p.MCC_HIV_STATUS === 'POS') return true;
+  return S.person.events.some(function (e) { return e.MCC_HIV_RESULT === 'POS'; }) || (extra && extra.MCC_HIV_RESULT === 'POS');
+}
+function renderPerson() {
+  var d = S.person, p = d.person, box = $('#cap-person');
+  var head = el('div', { class: 'card' }, [
+    el('div', { class: 'bar' }, [el('h2', { class: 'grow', text: (p.MCC_FIRST_NAME || '') + ' ' + (p.MCC_SURNAME || '') }),
+      can('entry') ? el('button', { class: 'btn ghost', text: 'Edit details', onclick: function () { openForm({ kind: 'reg', tei_id: p.tei_id, values: p, org_unit: p.org_unit }); } }) : null]),
+    el('div', { class: 'person-head' }, [['UMID', p.umid], ['Date of birth', p.MCC_DOB + (has(p.MCC_DOB) ? ' (' + yearsBetween(p.MCC_DOB, today()) + ' y)' : '')], ['Village / zone', [p.MCC_VILLAGE, p.MCC_ZONE].filter(has).join(' / ')],
+      ['Phone', p.MCC_PHONE], ['HIV status', p.MCC_HIV_STATUS], ['ANC reg. no.', p.MCC_ANC_REG_NO], ['Facility', p.org_unit]]
+      .map(function (x) { return el('div', null, [el('span', { text: x[0] }), x[1] || '—']); }))]);
+  var enrCard = el('div', { class: 'card' });
+  var sel = el('select', { 'aria-label': 'Pregnancy' });
+  d.enrollments.forEach(function (e, i) { sel.append(el('option', { value: e.enrollment_id, text: 'Pregnancy ' + (i + 1) + ' · booked ' + e.enrollment_date + ' · LMP ' + e.lmp + ' · ' + e.status })); });
+  if (S.enrollment) sel.value = S.enrollment.enrollment_id;
+  sel.addEventListener('change', function () { S.enrollment = d.enrollments.filter(function (e) { return e.enrollment_id === sel.value; })[0]; renderPerson(); });
+  var hasActive = d.enrollments.some(function (e) { return e.status === 'ACTIVE'; });
+  enrCard.append(el('div', { class: 'bar' }, [el('h3', { class: 'grow', text: 'Pregnancies' }), d.enrollments.length ? sel : el('span', { class: 'muted', text: 'Not enrolled yet' })]));
+  if (!hasActive && can('entry')) {
+    var ed = el('input', { type: 'date', value: today(), max: today() }), lmp = el('input', { type: 'date', max: today() });
+    var msg = el('span', { class: 'msg' });
+    enrCard.append(el('div', { class: 'grid4' }, [el('label', null, ['Booking (ANC1) date', ed]), el('label', null, ['Date of LMP (or ultrasound-derived LMP)', lmp]),
+      el('div', { style: 'display:flex;align-items:flex-end' }, [el('button', { class: 'btn primary', text: 'Enroll new pregnancy', onclick: function (ev) {
+        busy(ev.target, true);
+        api('enroll', S.token, p.tei_id, { enrollment_date: ed.value, lmp: lmp.value, org_unit: $('#cap-ou').value || p.org_unit })
+          .then(function (e) { toast('Pregnancy enrolled. EDD ' + addDays(e.lmp, 280)); return openPerson(p.tei_id, e.enrollment_id); })
+          .catch(function (e) { msg.textContent = e.message; }).then(function () { busy(ev.target, false); });
+      } })])]), msg);
+  }
+  box.replaceChildren(head, enrCard);
+  if (!S.enrollment) return;
+  var en = S.enrollment, evs = d.events.filter(function (e) { return e.enrollment_id === en.enrollment_id; })
+    .sort(function (a, b) { return String(a.event_date).localeCompare(String(b.event_date)); });
+  var anc1 = evs.filter(function (e) { return e.stage === 'ANC1'; })[0];
+  var hasStage = function (c) { return evs.some(function (e) { return e.stage === c; }); };
+  var latestRisk = evs.filter(function (e) { return e.stage === 'ANC1' || e.stage === 'ANCFU'; }).reverse().filter(function (e) { return String(e.MCC_HIGH_RISK) === 'true'; })[0];
+  var card = el('div', { class: 'card' });
+  if (latestRisk) card.append(el('div', { class: 'risk', text: 'HIGH-RISK PREGNANCY: ' + latestRisk.MCC_RISK_REASONS }));
+  var edd = (anc1 && anc1.MCC_EDD) || addDays(en.lmp, 280);
+  var ga = Math.floor((280 - daysBetween(today(), edd)) / 7);
+  card.append(el('div', { class: 'person-head' }, [['LMP', en.lmp], ['EDD', edd], ['GA today', en.status === 'ACTIVE' && !hasStage('DEL') && !hasStage('LOSS') ? ga + ' weeks' : '—'], ['Status', en.status]]
+    .map(function (x) { return el('div', null, [el('span', { text: x[0] }), x[1]]); })));
+  if (en.status === 'ACTIVE' && can('entry')) {
+    var btns = el('div', { class: 'stages' });
+    var add = function (code, ok) { if (ok) btns.append(el('button', { class: 'btn', text: '+ ' + stageName(code), onclick: function () { openForm({ kind: 'event', stage: code }); } })); };
+    add('ANC1', !anc1); add('ANCFU', !!anc1 && !hasStage('DEL') && !hasStage('LOSS')); add('DEL', !hasStage('DEL') && !hasStage('LOSS'));
+    add('PNC', hasStage('DEL')); add('LOSS', !hasStage('DEL') && !hasStage('LOSS')); add('REF', true); add('EXIT', !hasStage('EXIT'));
+    card.append(btns);
+  }
+  var tb = el('tbody');
+  evs.forEach(function (e) {
+    var key = e.stage === 'DEL' ? (e.MCC_DEL_MODE || '') + ' ' + (e.MCC_B1_OUTCOME || '') : e.stage === 'PNC' ? (e.MCC_PNC_WINDOW || '') : e.stage === 'EXIT' ? e.MCC_EXIT_OUTCOME : has(e.MCC_GA_WK) ? 'GA ' + e.MCC_GA_WK + ' wk' : '';
+    tb.append(el('tr', { class: 'click', onclick: function () { openForm({ kind: 'event', stage: e.stage, event: e }); } }, [
+      el('td', { text: e.event_date }), el('td', { text: stageName(e.stage) }), el('td', null, [el('span', { class: 'pill ' + (e.status === 'COMPLETED' ? 'ok' : ''), text: e.status })]),
+      el('td', { text: key }), el('td', { text: String(e.MCC_HIGH_RISK) === 'true' ? 'High risk' : '' }), el('td', { text: e.updated_by })]));
+  });
+  card.append(evs.length ? el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['Date', 'Stage', 'Status', 'Summary', 'Risk', 'Last edited by'].map(function (h) { return el('th', { text: h }); }))]), tb])])
+    : el('p', { class: 'muted', text: 'No events yet. Start with ANC 1.' }));
+  box.append(card);
+}
+
+// ================= FORMS =================
+function optionsOf(f) { return META.optionSets[META.fields[f].os] || []; }
+function inputFor(code, value, onChange) {
+  var m = META.fields[code], vt = m.vt, auto = m.mand === 'Auto', node;
+  var fire = function () { onChange(code, read()); };
+  var read;
+  if (vt === 'MULTI_TEXT') {
+    var set = String(value || '').split(',').filter(Boolean);
+    node = el('div', { class: 'checks' }, optionsOf(code).map(function (o) {
+      return el('label', null, [el('input', { type: 'checkbox', value: o[0], checked: set.indexOf(o[0]) >= 0, disabled: auto, onchange: fire }), o[1]]);
+    }));
+    read = function () { return $$('input:checked', node).map(function (i) { return i.value; }).join(','); };
+  } else if (m.os && optionsOf(code).length <= 4 && !auto) {
+    var nm = 'r_' + code + '_' + Math.random().toString(36).slice(2, 7);
+    node = el('div', { class: 'radios' }, optionsOf(code).map(function (o) {
+      return el('label', null, [el('input', { type: 'radio', name: nm, value: o[0], checked: String(value) === o[0], onchange: fire }), o[1]]);
+    }).concat([el('button', { type: 'button', class: 'btn sm ghost', text: 'clear', onclick: function () { $$('input', node).forEach(function (i) { i.checked = false; }); fire(); } })]));
+    read = function () { var c = $('input:checked', node); return c ? c.value : ''; };
+  } else if (m.os) {
+    node = el('select', { disabled: auto, onchange: fire }, [el('option', { value: '', text: '' })].concat(optionsOf(code).map(function (o) { return el('option', { value: o[0], text: o[1] }); })));
+    node.value = has(value) ? String(value) : ''; read = function () { return node.value; };
+  } else if (vt === 'BOOLEAN') {
+    var nb = 'b_' + code + '_' + Math.random().toString(36).slice(2, 7);
+    node = el('div', { class: 'radios' }, [['true', 'Yes'], ['false', 'No']].map(function (o) {
+      return el('label', null, [el('input', { type: 'radio', name: nb, value: o[0], checked: String(value) === o[0], disabled: auto, onchange: fire }), o[1]]);
+    }));
+    read = function () { var c = $('input:checked', node); return c ? c.value : ''; };
+  } else if (vt === 'TRUE_ONLY') {
+    var cb = el('input', { type: 'checkbox', checked: String(value) === 'true', disabled: auto, onchange: fire });
+    node = el('div', { class: 'checks' }, [el('label', null, [cb, 'Yes'])]);
+    read = function () { return cb.checked ? 'true' : ''; };
+  } else if (vt === 'ORGANISATION_UNIT') {
+    node = el('select', { onchange: fire }); fillOuSelect(node, S.allOus, true); node.value = value || ''; read = function () { return node.value; };
+  } else if (vt === 'AGE') {
+    var dob = el('input', { type: 'date', value: value || '', max: today(), oninput: fire });
+    var yrs = el('input', { type: 'number', min: 10, max: 60, placeholder: 'or age (years)', style: 'max-width:9rem', oninput: function () {
+      if (has(yrs.value)) { var d = new Date(); d.setFullYear(d.getFullYear() - Number(yrs.value)); d.setMonth(0, 1); dob.value = iso(d); fire(); }
+    } });
+    node = el('div', { class: 'bar', style: 'margin:0' }, [dob, yrs]); read = function () { return dob.value; };
+  } else {
+    var type = { DATE: 'date', DATETIME: 'datetime-local', NUMBER: 'number', INTEGER: 'number', INTEGER_POSITIVE: 'number', INTEGER_ZERO_OR_POSITIVE: 'number', PHONE_NUMBER: 'tel' }[vt] || 'text';
+    if (vt === 'LONG_TEXT') node = el('textarea', { rows: 2, readonly: auto, oninput: fire });
+    else node = el('input', { type: type, readonly: auto, step: vt === 'NUMBER' ? 'any' : null, min: /POSITIVE/.test(vt) ? (vt === 'INTEGER_POSITIVE' ? 1 : 0) : null, oninput: fire });
+    node.value = has(value) ? String(value).replace(' ', 'T') : ''; read = function () { return node.value; };
+  }
+  return { node: node, read: read, set: function (v) {
+    v = has(v) ? String(v) : '';
+    if (node.tagName === 'SELECT' || node.tagName === 'INPUT' || node.tagName === 'TEXTAREA') node.value = v;
+    else if (vt === 'AGE') $('input[type=date]', node).value = v;
+    else $$('input', node).forEach(function (i) { i.checked = i.type === 'checkbox' && vt !== 'TRUE_ONLY' ? v.split(',').indexOf(i.value) >= 0 : (vt === 'TRUE_ONLY' ? v === 'true' : i.value === v); });
+  } };
+}
+
+function openForm(opts) {
+  var reg = opts.kind === 'reg';
+  var st = reg ? { code: 'REG', name: opts.tei_id ? 'Edit client details' : 'Register woman', sections: META.registration } : META.stages.filter(function (s) { return s.code === opts.stage; })[0];
+  var ev = opts.event || null;
+  var values = {}; var src = reg ? (opts.values || {}) : (ev || {});
+  st.sections.forEach(function (s) { s.fields.forEach(function (f) { if (has(src[f])) values[f] = String(src[f]); }); });
+  S.form = { reg: reg, st: st, ev: ev, values: values, inputs: {}, wraps: {}, msgs: {}, secs: {}, opts: opts, hidden: [] };
+  show('form');
+  $('#form-title').textContent = st.name + (reg ? '' : ' — ' + (S.person.person.MCC_FIRST_NAME || '') + ' ' + (S.person.person.MCC_SURNAME || '') + ' (' + S.person.person.umid + ')');
+  var head = $('#form-head'); head.replaceChildren();
+  if (reg) {
+    var ou = el('select', { id: 'f-ou' }); fillOuSelect(ou, S.ous, false); ou.value = opts.org_unit || (S.ous[0] && S.ous[0].code);
+    head.append(el('label', null, ['Registering facility', ou]));
+    if (opts.tei_id) head.append(el('label', null, ['UMID', el('input', { value: opts.values.umid, readonly: true })]));
+  } else {
+    var date = el('input', { type: 'date', id: 'f-date', max: today(), value: ev ? String(ev.event_date).slice(0, 10) : today() });
+    date.addEventListener('input', recompute);
+    head.append(el('label', null, [st.code === 'DEL' ? 'Event date (delivery date)' : 'Visit date', date]));
+    var euo = el('select', { id: 'f-ou' }); fillOuSelect(euo, S.ous, false); euo.value = (ev && ev.org_unit) || $('#cap-ou').value || S.enrollment.org_unit;
+    head.append(el('label', null, ['Org unit', euo]));
+  }
+  var form = $('#form-body'); form.replaceChildren();
+  st.sections.forEach(function (s) {
+    var body = el('div', { class: 'sec-body' });
+    s.fields.forEach(function (f) {
+      var m = META.fields[f];
+      var inp = inputFor(f, values[f], function (code, v) { S.form.values[code] = v; recompute(); });
+      var msg = el('div', { class: 'fmsg' });
+      var w = el('div', { class: 'fld' + (m.mand === 'Auto' ? ' auto' : ''), 'data-code': f }, [
+        el('label', null, [el('span', null, [m.name, m.mand === 'Yes' ? el('span', { class: 'req', text: ' *' }) : null, m.mand === 'Auto' ? el('span', { class: 'muted', text: ' (calculated)' }) : null]), inp.node]), msg]);
+      if (m.help && m.mand !== 'Auto') w.title = m.help;
+      S.form.inputs[f] = inp; S.form.wraps[f] = w; S.form.msgs[f] = msg; body.append(w);
+    });
+    var fs = el('fieldset', { class: 'sec' }, [el('legend', { text: s.name.replace(/^[A-Z]\d+\s/, '') }), body]);
+    S.form.secs[s.name] = fs; form.append(fs);
+  });
+  $('#form-complete').hidden = reg; $('#form-save').textContent = reg ? 'Save' : 'Save draft';
+  $('#form-msg').textContent = '';
+  recompute();
+}
+$('#form-back').addEventListener('click', function () { if (S.form && !S.form.reg || (S.form && S.form.opts.tei_id)) openPerson(S.person.person.tei_id, S.enrollment && S.enrollment.enrollment_id); else show('capture'); });
+
+// ---------- rules (client-side mirror of the design's program rules) ----------
+function recompute() {
+  var F = S.form, v = F.values, code = F.st.code, r = { hide: {}, assign: {}, warn: {}, err: {}, banner: [], info: [], hideSec: {} };
+  var hide = function () { Array.prototype.forEach.call(arguments, function (f) { r.hide[f] = true; }); };
+  var evDate = F.reg ? today() : ($('#f-date') && $('#f-date').value) || today();
+  if (F.reg) {
+    if (v.MCC_HIV_STATUS !== 'POS') hide('MCC_ART_NO');
+    if (has(v.MCC_NRC) && !/^[0-9]{6}\/[0-9]{2}\/[0-9]$/.test(v.MCC_NRC)) r.err.MCC_NRC = 'NRC must look like 123456/78/1';
+    if (has(v.MCC_DOB)) r.assign.MCC_ADOLESCENT = String(yearsBetween(v.MCC_DOB, today()) < 20);
+    r.assign.MCC_SMS_PHONE = v.MCC_CONSENT_SMS === 'true' ? (v.MCC_PHONE || '') : '';
+    if (num(v.MCC_TRAVEL_MIN) >= 60) r.warn.MCC_TRAVEL_MIN = 'Far from facility: discuss maternity waiting home.';
+    ['MCC_UMID', 'MCC_CUR_EDD', 'MCC_CUR_HIGH_RISK', 'MCC_CUR_RISK_REASONS', 'MCC_DEFAULTER'].forEach(function (f) { if (!has(v[f])) hide(f); });
+    return applyRules(r);
+  }
+  var en = S.enrollment, evs = S.person.events.filter(function (e) { return e.enrollment_id === en.enrollment_id && (!F.ev || e.event_id !== F.ev.event_id); });
+  var prior = evs.filter(function (e) { return String(e.event_date) <= evDate; }).sort(function (a, b) { return String(a.event_date).localeCompare(String(b.event_date)); });
+  var last = function (f) { for (var i = prior.length - 1; i >= 0; i--) if (has(prior[i][f])) return prior[i][f]; return ''; };
+  var anc1 = evs.filter(function (e) { return e.stage === 'ANC1'; })[0] || {};
+  var P = S.person.person, pos = hivPos(v);
+  if (en.lmp > evDate) r.banner.push('Visit date is before the LMP.');
+  var dating = code === 'ANC1' ? v.MCC_DATING_METHOD : anc1.MCC_DATING_METHOD;
+  var edd = code === 'ANC1' ? v.MCC_EDD : anc1.MCC_EDD;
+  if (code === 'ANC1') {
+    if (dating === 'LMP' || !has(dating)) { edd = addDays(en.lmp, 280); r.assign.MCC_EDD = edd; }
+    if (dating !== 'US_LT24' && dating !== 'US_GE24') hide('MCC_US_DATE', 'MCC_US_GA_WK');
+    else if (has(v.MCC_EDD) && Math.abs(daysBetween(addDays(en.lmp, 280), v.MCC_EDD)) > 7) r.warn.MCC_EDD = 'EDD differs from enrollment LMP by >7 days: update the LMP to EDD − 280 days.';
+  }
+  if (!has(edd)) edd = addDays(en.lmp, 280);
+  var ga = Math.floor((280 - daysBetween(evDate, edd)) / 7);
+  if (code === 'ANC1' || code === 'ANCFU') {
+    r.assign.MCC_GA_WK = String(ga);
+    if (ga < 4 || ga > 44) r.err.MCC_GA_WK = 'Impossible gestational age (' + ga + ' weeks).';
+    if (code === 'ANC1') { r.assign.MCC_BOOK_TRIMESTER = ga < 14 ? 'T1' : ga < 28 ? 'T2' : 'T3'; r.assign.MCC_ANC1_FIRST_TRI = String(ga < 12); }
+    if (code === 'ANCFU') {
+      r.assign.MCC_ANC_CONTACT_NO = String(evs.filter(function (e) { return (e.stage === 'ANC1' || e.stage === 'ANCFU') && String(e.event_date) <= evDate; }).length + 1);
+      var booked = last('MCC_NEXT_APPT'); if (has(booked)) r.assign.MCC_ANC_ON_SCHEDULE = String(Math.abs(daysBetween(booked, evDate)) <= 7);
+    }
+    var h = num(v.MCC_HEIGHT || anc1.MCC_HEIGHT), w = num(v.MCC_WEIGHT);
+    if (h > 0 && w > 0 && code === 'ANC1') r.assign.MCC_BMI = String(Math.round(w / Math.pow(h / 100, 2) * 10) / 10);
+    if (has(v.MCC_WEIGHT) && (w < 30 || w > 150)) r.err.MCC_WEIGHT = 'Weight must be 30–150 kg.';
+    if (v.MCC_HB_STATUS !== 'DONE') hide('MCC_HB', 'MCC_ANAEMIA_GRADE');
+    var hb = num(v.MCC_HB);
+    if (has(v.MCC_HB)) { if (hb < 3 || hb > 20) r.err.MCC_HB = 'Hb outside 3–20 g/dL.'; r.assign.MCC_ANAEMIA_GRADE = hb >= 11 ? 'NONE' : hb >= 10 ? 'MILD' : hb >= 7 ? 'MODERATE' : 'SEVERE'; }
+    if (ga < 20) hide('MCC_FHR', 'MCC_FETAL_MOVEMENTS');
+    if (ga < 28) hide('MCC_PRESENTATION');
+    if (has(v.MCC_FHR) && (num(v.MCC_FHR) < 110 || num(v.MCC_FHR) > 160)) r.warn.MCC_FHR = 'FHR outside 110–160.';
+    if (code === 'ANC1' && has(v.MCC_PARITY) && has(v.MCC_GRAVIDA) && num(v.MCC_PARITY) >= num(v.MCC_GRAVIDA)) r.err.MCC_PARITY = 'Parity must be lower than gravida.';
+    if (P.MCC_HIV_STATUS === 'POS') hide('MCC_HIV_RESULT', 'MCC_HIV_TEST_TYPE');
+    if (!pos) r.hideSec['C6 HIV care (PMTCT)'] = true;
+    if (v.MCC_HIV_RESULT === 'POS' && P.MCC_HIV_STATUS !== 'POS') r.info.push('New HIV positive: confirm per algorithm, start ART the same day, and update HIV status on the client details.');
+    if (code === 'ANCFU' && P.MCC_HIV_STATUS !== 'POS' && ga >= 28 && evs.filter(function (e) { return e.MCC_HIV_RESULT === 'NEG'; }).length < 2 && !has(v.MCC_HIV_RESULT)) r.warn.MCC_HIV_RESULT = 'HIV retest due (3rd trimester).';
+    if (has(v.MCC_VL_RESULT)) r.assign.MCC_VL_CATEGORY = num(v.MCC_VL_RESULT) < 50 ? 'UNDETECTABLE' : num(v.MCC_VL_RESULT) < 1000 ? 'SUPPRESSED' : 'UNSUPPRESSED';
+    if (pos && (v.MCC_ART_STATUS === 'NOT_ON_ART' || v.MCC_ART_STATUS === 'REFERRED')) r.warn.MCC_ART_STATUS = 'Not on ART: initiate or confirm linkage today.';
+    if (v.MCC_SYPH_RESULT !== 'REACTIVE') hide('MCC_BPG_DOSE', 'MCC_SYPH_PARTNER_TX');
+    if (ga < 13) r.hideSec['C3 IPTp-SP'] = true;
+    var ctx = v.MCC_CTX === 'true' || prior.some(function (e) { return e.MCC_CTX === 'true'; });
+    if (ctx && v.MCC_IPTP_STATUS === 'GIVEN') r.err.MCC_IPTP_STATUS = 'SP is contraindicated with cotrimoxazole. Record "Not given – on cotrimoxazole".';
+    if (v.MCC_IPTP_STATUS === 'GIVEN') {
+      r.assign.MCC_IPTP_DATE = evDate;
+      r.assign.MCC_IPTP_DOSE_NO = String(prior.filter(function (e) { return e.MCC_IPTP_STATUS === 'GIVEN'; }).length + 1);
+      var ld = last('MCC_IPTP_DATE'); if (has(ld) && daysBetween(ld, evDate) < 28) r.warn.MCC_IPTP_STATUS = 'Last IPTp dose was ' + daysBetween(ld, evDate) + ' days ago (minimum 28).';
+    } else hide('MCC_IPTP_DOSE_NO', 'MCC_IPTP_DOT', 'MCC_IPTP_DATE');
+    if (v.MCC_SUPP_PRODUCT === 'NONE_STOCKOUT' || v.MCC_SUPP_PRODUCT === 'NONE_OTHER') hide('MCC_SUPP_REGIMEN', 'MCC_SUPP_TABS', 'MCC_SUPP_DAYS');
+    var prevProd = last('MCC_SUPP_PRODUCT');
+    if ((v.MCC_SUPP_PRODUCT === 'IFA' && prevProd === 'MMS') || (v.MCC_SUPP_PRODUCT === 'MMS' && prevProd === 'IFA')) r.warn.MCC_SUPP_PRODUCT = 'Switching IFA ↔ MMS: only one may be active; tell her to stop the previous product.';
+    var cum = (num(last('MCC_SUPP_CUM_TABS')) || 0) + (num(v.MCC_SUPP_TABS) || 0);
+    r.assign.MCC_SUPP_CUM_TABS = String(cum); r.assign.MCC_SUPP_TARGET_MET = String(cum >= 180);
+    r.hideSec['C2 Calcium'] = true;
+    if (ga < 13) hide('MCC_DEWORM');
+    var prevTd = num(code === 'ANC1' ? v.MCC_TD_PRIOR : anc1.MCC_TD_PRIOR) || 0, lastTd = code === 'ANC1' ? v.MCC_TD_PRIOR_LAST : anc1.MCC_TD_PRIOR_LAST;
+    var preg = prior.concat([v]).filter(function (e) { return /^TD\d$/.test(e.MCC_TD_DOSE || ''); }).length;
+    var yrs = has(lastTd) ? yearsBetween(lastTd, evDate) : 99;
+    var prot = (preg + prevTd >= 2) && (preg >= 1 || prevTd >= 5 || (prevTd === 4 && yrs < 10) || (prevTd === 3 && yrs < 5) || (prevTd === 2 && yrs < 3));
+    r.assign.MCC_TD_PROTECTED = prot ? 'PROTECTED' : 'NOT_PROTECTED';
+    if (code === 'ANC1' && prevTd === 0) hide('MCC_TD_PRIOR_LAST');
+    if (has(v.MCC_NEXT_APPT) && daysBetween(evDate, v.MCC_NEXT_APPT) <= 0) r.err.MCC_NEXT_APPT = 'Must be after the visit date.';
+    var sched = [12, 20, 26, 30, 34, 36, 38, 40].filter(function (x) { return x > ga; })[0];
+    if (sched) r.info.push('Suggested next contact: ' + addDays(edd, sched * 7 - 280) + ' (' + sched + ' weeks).');
+    // risk
+    var R = [], bpS = num(v.MCC_BP_SYS), bpD = num(v.MCC_BP_DIA), up = v.MCC_URINE_PROTEIN;
+    if (has(v.MCC_BP_SYS) && has(v.MCC_BP_DIA) && (bpS < 60 || bpS > 260 || bpD < 30 || bpD > 160 || bpD >= bpS)) r.err.MCC_BP_DIA = 'Check BP: implausible, or diastolic not below systolic.';
+    if (bpS >= 140 || bpD >= 90) { R.push('BP ≥140/90'); r.warn.MCC_BP_SYS = 'Raised BP: repeat after rest, check urine protein.'; }
+    if (bpS >= 160 || bpD >= 110) r.warn.MCC_BP_SYS = 'BP ≥160/110: treat per protocol and refer urgently.';
+    if ((bpS >= 140 || bpD >= 90) && /^P[234]$/.test(up || '')) { R.push('Pre-eclampsia signs'); r.warn.MCC_URINE_PROTEIN = 'Suspected pre-eclampsia.'; }
+    if (has(v.MCC_HB) && hb < 7) { R.push('Severe anaemia (Hb<7)'); r.warn.MCC_HB = 'Severe anaemia: refer.'; }
+    if (has(P.MCC_DOB) && yearsBetween(P.MCC_DOB, evDate) < 20) R.push('Adolescent');
+    var parity = num(code === 'ANC1' ? v.MCC_PARITY : anc1.MCC_PARITY); if (parity >= 5) R.push('Grand multipara');
+    if (num(P.MCC_PREV_CS_N) > 0) R.push('Previous C-section');
+    if (has(v.MCC_MUAC)) { var mu = num(v.MCC_MUAC); r.assign.MCC_MUAC_CLASS = mu < 21 ? 'SAM' : mu < 23 ? 'MAM' : 'NORMAL'; if (mu < 23) { R.push('MUAC below threshold'); r.warn.MCC_MUAC = 'Low MUAC: nutrition support.'; } }
+    if (v.MCC_SYPH_RESULT === 'REACTIVE') R.push('Syphilis reactive');
+    if (pos) R.push('HIV positive');
+    if (ga >= 36 && has(v.MCC_PRESENTATION) && ['CEPHALIC', 'NOT_DETERMINED'].indexOf(v.MCC_PRESENTATION) < 0) R.push('Malpresentation ≥36 wks');
+    if (ga >= 13 && has(v.MCC_IPTP_STATUS) && ['GIVEN', 'NG_CTX', 'NG_INTERVAL'].indexOf(v.MCC_IPTP_STATUS) < 0) R.push('Missed IPTp');
+    if (P.MCC_PREV_PPH === 'true' || P.MCC_PREV_PE === 'true' || num(anc1.MCC_PREV_STILLBIRTHS || v.MCC_PREV_STILLBIRTHS) > 0) R.push('Adverse obstetric history');
+    if (['MCC_HX_HTN', 'MCC_HX_DM', 'MCC_HX_SCD', 'MCC_HX_EPILEPSY'].some(function (k) { return P[k] === 'true'; }) || P.MCC_HX_TB === 'ON_TX') R.push('Chronic medical condition');
+    if ((v.MCC_RHESUS || anc1.MCC_RHESUS) === 'NEG') R.push('Rh negative');
+    if (h > 0 && h < 145) R.push('Height <145 cm');
+    if (/MULTIPLE|PRAEVIA|IUFD|IUGR/.test(v.MCC_US_FINDINGS || '')) R.push('Ultrasound finding');
+    if (has(v.MCC_DANGER_ANC) && v.MCC_DANGER_ANC !== 'NONE') { R.push('Danger sign'); r.warn.MCC_DANGER_ANC = 'Danger sign: manage and refer now.'; }
+    r.assign.MCC_HIGH_RISK = String(R.length > 0 || has(v.MCC_RISK_OTHER)); r.assign.MCC_RISK_REASONS = R.join('; ');
+    if (R.length) r.banner.push('HIGH-RISK PREGNANCY: ' + R.join('; '));
+    if (v.MCC_REFERRED !== 'true') hide('MCC_REF_TO', 'MCC_REF_REASON', 'MCC_REF_FEEDBACK');
+  }
+  if (code === 'DEL') {
+    var dd = has(v.MCC_DELIVERY_DT) ? v.MCC_DELIVERY_DT.slice(0, 10) : evDate;
+    r.assign.MCC_DEL_GA_WK = String(Math.floor((280 - daysBetween(dd, edd)) / 7));
+    if (num(r.assign.MCC_DEL_GA_WK) < 37) r.warn.MCC_DEL_GA_WK = 'Preterm birth.';
+    if (dd < String(en.enrollment_date)) r.err.MCC_DELIVERY_DT = 'Delivery is before the booking date.';
+    if (has(v.MCC_ADMIT_DT) && has(v.MCC_DELIVERY_DT) && v.MCC_DELIVERY_DT < v.MCC_ADMIT_DT && v.MCC_DEL_PLACE === 'THIS_FACILITY') r.err.MCC_DELIVERY_DT = 'Delivery before admission: if born before arrival, change place of delivery.';
+    if (v.MCC_DEL_PLACE !== 'HOME' && v.MCC_DEL_PLACE !== 'EN_ROUTE') hide('MCC_BBA');
+    if (v.MCC_DEL_PLACE !== 'THIS_FACILITY') hide('MCC_PARTOGRAPH');
+    if (has(v.MCC_ATTENDANT)) r.assign.MCC_SBA = String(['MIDWIFE', 'NURSE', 'CO', 'MO', 'OBGYN'].indexOf(v.MCC_ATTENDANT) >= 0);
+    var nb = num(v.MCC_N_BABIES) || 1;
+    if (nb > 3) r.err.MCC_N_BABIES = 'The form holds 3 babies.';
+    if (nb < 2) r.hideSec['D6 Baby 2'] = true;
+    if (nb < 3) r.hideSec['D6 Baby 3'] = true;
+    [1, 2, 3].forEach(function (b) {
+      var p = 'MCC_B' + b + '_', out = v[p + 'OUTCOME'];
+      if (out === 'FSB' || out === 'MSB') { hide.apply(null, ['APGAR1', 'APGAR5', 'RESUS', 'BF1H', 'SKIN', 'KMC', 'VITK', 'TEO', 'CHX', 'BCG', 'OPV0', 'ARV_PROPH'].map(function (x) { return p + x; })); r.banner.push('Stillbirth recorded (baby ' + b + '): complete the perinatal death review.'); }
+      var bw = num(v[p + 'BW']);
+      if (has(v[p + 'BW'])) { r.assign[p + 'LBW'] = String(bw < 2500); if (bw < 300 || bw > 6500) r.err[p + 'BW'] = 'Birth weight outside 300–6500 g.'; }
+      if (r.assign[p + 'LBW'] !== 'true') hide(p + 'KMC');
+      if (!pos) hide(p + 'ARV_PROPH');
+      hide(p + 'TEI_LINKED');
+    });
+    if (!/PPH/.test(v.MCC_DEL_COMPLICATIONS || '')) hide('MCC_TXA');
+    if (/ECLAMPSIA|SEVERE_PE/.test(v.MCC_DEL_COMPLICATIONS || '') && !has(v.MCC_MGSO4)) r.warn.MCC_MGSO4 = 'Record MgSO4 for eclampsia / severe pre-eclampsia.';
+    if (v.MCC_MAT_OUTCOME !== 'DIED') hide('MCC_MAT_DEATH_DATE', 'MCC_MAT_DEATH_CAUSE', 'MCC_MDSR_NOTIFIED');
+    else r.banner.push('MATERNAL DEATH: notify MDSR within 24 hours and complete the Exit stage.');
+    if (P.MCC_HIV_STATUS === 'POS') hide('MCC_HIV_RESULT', 'MCC_HIV_TEST_TYPE');
+  }
+  if (code === 'PNC') {
+    var del = evs.filter(function (e) { return e.stage === 'DEL'; })[0];
+    var dday = del && (has(del.MCC_DELIVERY_DT) ? String(del.MCC_DELIVERY_DT).slice(0, 10) : del.event_date);
+    if (dday) {
+      var days = daysBetween(dday, evDate);
+      r.assign.MCC_PNC_DAYS = String(days);
+      if (days < 0) r.err.MCC_PNC_DAYS = 'PNC is dated before the delivery.';
+      var win = days <= 2 ? 'W48H' : days >= 3 && days <= 7 ? 'D3_7' : days >= 8 && days <= 14 ? 'D8_14' : days >= 42 && days <= 49 ? 'W6' : 'OUTSIDE';
+      r.assign.MCC_PNC_WINDOW = win; r.assign.MCC_PNC_IN_WINDOW = String(win !== 'OUTSIDE');
+      if (win === 'W6' && P.MCC_HIV_STATUS !== 'POS' && /EBF|MIXED/.test(v.MCC_BF_STATUS || '') && !has(v.MCC_HIV_RESULT)) r.warn.MCC_HIV_RESULT = 'HIV retest due (breastfeeding).';
+    }
+    r.assign.MCC_PNC_CONTACT_NO = String(evs.filter(function (e) { return e.stage === 'PNC' && String(e.event_date) <= evDate; }).length + 1);
+    if (num(v.MCC_TEMP) >= 38) r.warn.MCC_TEMP = 'Fever: assess for puerperal sepsis.';
+    if (num(v.MCC_BP_SYS) >= 140 || num(v.MCC_BP_DIA) >= 90) r.warn.MCC_BP_SYS = 'Raised BP postpartum: manage per protocol.';
+    if (has(v.MCC_DANGER_PNC) && v.MCC_DANGER_PNC !== 'NONE') r.warn.MCC_DANGER_PNC = 'Danger sign: manage and refer now.';
+    if (has(v.MCC_MUAC)) r.assign.MCC_MUAC_CLASS = num(v.MCC_MUAC) < 21 ? 'SAM' : num(v.MCC_MUAC) < 23 ? 'MAM' : 'NORMAL';
+    hide('MCC_PNC_VITA');
+    if (v.MCC_FP_COUNSELLED === 'true' && !has(v.MCC_FP_METHOD)) r.warn.MCC_FP_METHOD = 'Record the method adopted (or "None").';
+    if (P.MCC_HIV_STATUS === 'POS') hide('MCC_HIV_RESULT', 'MCC_HIV_TEST_TYPE');
+  }
+  if (code === 'ANC1' || code === 'ANCFU' || code === 'PNC') {
+    if (has(v.MCC_MH_SCORE) && num(v.MCC_MH_SCORE) >= 10 && v.MCC_MH_RESULT === 'NEG') r.err.MCC_MH_RESULT = 'Score is at/above the cut-off.';
+  }
+  if (code === 'REF') {
+    if (v.MCC_FU_TYPE !== 'HOME_VISIT') r.hideSec['G2 Home visit'] = true;
+    else hide('MCC_REF_TO', 'MCC_REF_FROM', 'MCC_REF_URGENCY');
+    if (v.MCC_FU_TYPE === 'TRANSFER_OUT') r.info.push('After saving, an admin updates the facility so the receiving facility sees her. The UMID does not change.');
+    if (v.MCC_HV_OUTCOME === 'DIED') r.banner.push('Community-reported death: notify the facility in-charge and MDSR.');
+  }
+  if (code === 'EXIT') {
+    if (v.MCC_EXIT_OUTCOME !== 'TRANSFERRED_OUT') hide('MCC_EXIT_TRANSFER_TO');
+    if (v.MCC_EXIT_OUTCOME !== 'LTFU') hide('MCC_EXIT_LAST_SEEN');
+    if (v.MCC_EXIT_OUTCOME === 'COMPLETED_PNC' && !evs.some(function (e) { return e.MCC_PNC_WINDOW === 'W6'; })) r.err.MCC_EXIT_OUTCOME = '"Completed PNC" needs a PNC contact in the 6-week window.';
+    r.info.push('"Save & complete" closes this pregnancy.');
+  }
+  applyRules(r);
+}
+function applyRules(r) {
+  var F = S.form;
+  Object.keys(r.assign).forEach(function (f) { if (F.inputs[f]) { F.values[f] = r.assign[f]; F.inputs[f].set(r.assign[f]); } });
+  F.hidden = [];
+  F.st.sections.forEach(function (s) {
+    var secHidden = !!r.hideSec[s.name], visible = 0;
+    s.fields.forEach(function (f) {
+      var hid = secHidden || !!r.hide[f];
+      F.wraps[f].hidden = hid; if (hid) F.hidden.push(f); else visible++;
+      var m = F.msgs[f]; m.textContent = r.err[f] || r.warn[f] || ''; m.className = 'fmsg' + (r.err[f] ? ' err' : '');
+    });
+    F.secs[s.name].hidden = visible === 0;
+  });
+  F.errors = Object.keys(r.err).filter(function (f) { return F.hidden.indexOf(f) < 0 || !F.inputs[f]; }).map(function (f) { return r.err[f]; });
+  var b = $('#form-banner'); b.replaceChildren();
+  r.banner.forEach(function (t) { b.append(el('div', { class: 'risk', text: t })); });
+  r.info.forEach(function (t) { b.append(el('div', { class: 'info', text: t })); });
+}
+function saveForm(complete) {
+  var F = S.form, msg = $('#form-msg'); msg.className = 'msg'; msg.textContent = '';
+  if (F.errors && F.errors.length) { msg.textContent = 'Fix first: ' + F.errors[0]; return; }
+  var vals = {};
+  Object.keys(F.values).forEach(function (k) { if (F.hidden.indexOf(k) < 0) vals[k] = F.values[k]; });
+  if (complete || F.reg) {
+    var miss = [];
+    F.st.sections.forEach(function (s) { s.fields.forEach(function (f) { if (META.fields[f].mand === 'Yes' && F.hidden.indexOf(f) < 0 && !has(vals[f])) miss.push(META.fields[f].name); }); });
+    if (miss.length) { msg.textContent = 'Required: ' + miss.slice(0, 6).join(', ') + (miss.length > 6 ? '…' : ''); return; }
+  }
+  var btns = [$('#form-save'), $('#form-complete')]; btns.forEach(function (x) { busy(x, true); });
+  var done = function () { btns.forEach(function (x) { busy(x, false); }); };
+  if (F.reg) {
+    var go = function () {
+      return api('savePerson', S.token, { tei_id: F.opts.tei_id, org_unit: $('#f-ou').value, values: vals })
+        .then(function (p) { toast(F.opts.tei_id ? 'Details saved.' : 'Registered: ' + p.umid); return openPerson(p.tei_id); });
+    };
+    var pre = F.opts.tei_id ? Promise.resolve([]) : api('duplicateCheck', S.token, vals);
+    pre.then(function (dups) {
+      if (!dups.length) return go();
+      var open = window.confirm('Possible existing record(s):\n' + dups.map(function (d) { return d.umid + ' · ' + d.name + ' · ' + d.dob + ' · ' + d.village; }).join('\n') + '\n\nOK = open the existing record. Cancel = register as a new woman.');
+      return open ? openPerson(dups[0].tei_id) : go();
+    }).catch(function (e) { msg.textContent = e.message; }).then(done);
+    return;
+  }
+  api('saveEvent', S.token, { stage: F.st.code, event_id: F.ev && F.ev.event_id, enrollment_id: S.enrollment.enrollment_id, event_date: $('#f-date').value,
+    org_unit: $('#f-ou').value, status: complete ? 'COMPLETED' : 'ACTIVE', values: vals, hidden: F.hidden })
+    .then(function () { toast(complete ? 'Saved and completed.' : 'Saved.'); return openPerson(S.person.person.tei_id, S.enrollment.enrollment_id); })
+    .catch(function (e) { msg.textContent = e.message; }).then(done);
+}
+$('#form-save').addEventListener('click', function () { saveForm(false); });
+$('#form-complete').addEventListener('click', function () { saveForm(true); });
+
+// ================= UPLOAD =================
+var UP = { file: null, wb: null, rows: null, text: '', format: '' };
+(function initUpload() {
+  var p = new Date(); p.setMonth(p.getMonth() - 1); $('#up-period').value = iso(p).slice(0, 7);
+  var imp = $('#up-import'), tpl = $('#tpl-stage');
+  META.stages.forEach(function (s) { imp.append(el('option', { value: s.code, text: 'Import as ' + s.name + ' events' })); tpl.append(el('option', { value: s.code, text: s.name })); });
+})();
+$('#tpl-dl').addEventListener('click', function () {
+  var st = META.stages.filter(function (s) { return s.code === $('#tpl-stage').value; })[0];
+  var cols = ['umid', 'event_date'];
+  st.sections.forEach(function (s) { s.fields.forEach(function (f) { if (META.fields[f].mand !== 'Auto' && cols.indexOf(f) < 0) cols.push(f); }); });
+  var names = ['(field names – delete this row)', 'YYYY-MM-DD'].concat(cols.slice(2).map(function (f) { var m = META.fields[f]; return m.name + (m.os ? ' [codes: ' + (META.optionSets[m.os] || []).map(function (o) { return o[0]; }).join('|') + ']' : m.vt === 'BOOLEAN' ? ' [true|false]' : ''); }));
+  downloadText('MCC_template_' + st.code + '.csv', [cols, names].map(csvRow).join('\r\n'), 'text/csv');
+});
+function csvRow(r) { return r.map(function (c) { c = String(c === null || c === undefined ? '' : c); if (/^[=+\-@]/.test(c)) c = "'" + c; return /[",\r\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c; }).join(','); }
+function downloadText(name, text, type) {
+  var a = el('a', { href: URL.createObjectURL(new Blob(['﻿' + text], { type: type + ';charset=utf-8' })), download: name });
+  document.body.append(a); a.click(); a.remove();
+}
+$('#up-file').addEventListener('change', function () {
+  var f = this.files[0]; UP = { file: f, wb: null, rows: null, text: '', format: '' };
+  $('#up-sheet-wrap').hidden = true; $('#up-import-wrap').hidden = true; $('#up-go').disabled = true;
+  var pv = $('#up-preview'); pv.replaceChildren();
+  if (!f) return;
+  if (f.size > 10 * 1024 * 1024) { pv.append(el('div', { class: 'msg', text: 'File is larger than 10 MB.' })); return; }
+  var ext = (f.name.split('.').pop() || '').toLowerCase();
+  UP.format = { xlsx: 'XLSX', xls: 'XLS', csv: 'CSV', docx: 'DOCX', pdf: 'PDF', txt: 'TXT' }[ext] || ext.toUpperCase();
+  pv.append(el('p', { class: 'muted', text: 'Reading file…' }));
+  f.arrayBuffer().then(function (buf) {
+    if (/^(XLSX|XLS|CSV)$/.test(UP.format)) {
+      if (!window.XLSX) throw new Error('Spreadsheet reader did not load; the file will be stored without rows.');
+      UP.wb = XLSX.read(buf, { type: 'array', cellDates: true });
+      var sel = $('#up-sheet'); sel.replaceChildren.apply(sel, UP.wb.SheetNames.map(function (n) { return el('option', { value: n, text: n }); }));
+      $('#up-sheet-wrap').hidden = UP.wb.SheetNames.length < 2; $('#up-import-wrap').hidden = false;
+      pickSheet();
+    } else if (UP.format === 'DOCX') {
+      if (!window.mammoth) throw new Error('Word reader did not load; the file will be stored without text.');
+      return mammoth.extractRawText({ arrayBuffer: buf }).then(function (r) { UP.text = r.value; showText(); });
+    } else if (UP.format === 'PDF') {
+      if (!window.pdfjsLib) throw new Error('PDF reader did not load; the file will be stored without text.');
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      return pdfjsLib.getDocument({ data: new Uint8Array(buf.slice(0)) }).promise.then(function (pdf) {
+        var n = Math.min(pdf.numPages, 40), chain = Promise.resolve(), parts = [];
+        for (var i = 1; i <= n; i++) (function (i) { chain = chain.then(function () { return pdf.getPage(i).then(function (pg) { return pg.getTextContent(); }).then(function (tc) { parts.push(tc.items.map(function (x) { return x.str; }).join(' ')); }); }); })(i);
+        return chain.then(function () { UP.text = parts.join('\n\n'); showText(); });
+      });
+    } else if (UP.format === 'TXT') { UP.text = new TextDecoder().decode(buf); showText(); }
+    else showText();
+  }).catch(function (e) { pv.replaceChildren(el('div', { class: 'msg', text: e.message })); }).then(function () { $('#up-go').disabled = false; });
+});
+function pickSheet() {
+  var ws = UP.wb.Sheets[$('#up-sheet').value || UP.wb.SheetNames[0]];
+  UP.rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, dateNF: 'yyyy-mm-dd', defval: '' }).filter(function (r) { return r.some(function (c) { return String(c).trim() !== ''; }); });
+  var pv = $('#up-preview'), head = UP.rows[0] || [];
+  var tb = el('tbody'); UP.rows.slice(1, 21).forEach(function (r) { tb.append(el('tr', null, head.map(function (_, j) { return el('td', { text: r[j] }); }))); });
+  pv.replaceChildren(el('p', { class: 'small muted', text: (UP.rows.length - 1).toLocaleString() + ' data rows, ' + head.length + ' columns. Preview of the first 20:' }),
+    el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, head.map(function (h) { return el('th', { text: h }); }))]), tb])]));
+  if (head.indexOf('umid') >= 0 && head.indexOf('event_date') >= 0) {
+    var hit = META.stages.map(function (s) { var fs = []; s.sections.forEach(function (x) { fs = fs.concat(x.fields); }); return [s.code, head.filter(function (h) { return fs.indexOf(h) >= 0; }).length]; }).sort(function (a, b) { return b[1] - a[1]; })[0];
+    if (hit[1] > 0) $('#up-import').value = hit[0];
+  }
+}
+$('#up-sheet').addEventListener('change', pickSheet);
+function showText() {
+  var pv = $('#up-preview');
+  pv.replaceChildren(UP.text ? el('div', { class: 'preview' }, [el('p', { class: 'small muted', text: 'Extracted text (stored with the upload for search, up to 45,000 characters):' }), el('pre', { class: 'txt', text: UP.text.slice(0, 5000) })])
+    : el('p', { class: 'small muted', text: 'The file will be stored in the uploads folder.' }));
+}
+function b64(buf) { var s = '', b = new Uint8Array(buf), c = 0x8000; for (var i = 0; i < b.length; i += c) s += String.fromCharCode.apply(null, b.subarray(i, i + c)); return btoa(s); }
+$('#up-go').addEventListener('click', function () {
+  var f = UP.file, btn = this; if (!f) return; busy(btn, true);
+  var stageImp = $('#up-import-wrap').hidden ? '' : $('#up-import').value;
+  f.arrayBuffer().then(function (buf) {
+    return api('uploadFile', S.token, { name: f.name, mime: f.type || 'application/octet-stream', b64: b64(buf), format: UP.format, org_unit: $('#up-ou').value,
+      period: $('#up-period').value, description: $('#up-desc').value, rows: UP.rows ? UP.rows.map(function (r) { return r.map(function (c) { return c instanceof Date ? iso(c) : c; }); }) : null,
+      text: UP.text, importStage: stageImp });
+  }).then(function (r) {
+    toast('Uploaded ' + r.file_name + (r.rows_parsed ? ' · ' + r.rows_parsed + ' rows stored in tab ' + r.data_tab : '') + (r.events_imported ? ' · ' + r.events_imported + ' events imported' : ''));
+    $('#up-file').value = ''; $('#up-preview').replaceChildren(); $('#up-desc').value = ''; UP = {}; btn.disabled = true; loadUploads();
+  }).catch(function (e) { $('#up-preview').prepend(el('div', { class: 'msg', text: e.message })); btn.disabled = false; });
+});
+function loadUploads() {
+  var box = $('#up-list'); box.replaceChildren(el('p', { class: 'muted', text: 'Loading…' }));
+  $('#up-go').hidden = !can('entry');
+  api('listUploads', S.token).then(function (rows) {
+    if (!rows.length) { box.replaceChildren(el('p', { class: 'muted', text: 'No uploads yet.' })); return; }
+    var tb = el('tbody');
+    rows.forEach(function (r) {
+      tb.append(el('tr', null, [el('td', { text: String(r.uploaded_at).replace('T', ' ').slice(0, 16) }), el('td', null, [el('a', { href: r.drive_url, target: '_blank', rel: 'noopener', text: r.file_name })]),
+        el('td', { text: r.format }), el('td', { text: r.org_unit }), el('td', { text: r.period }), el('td', { text: r.description }),
+        el('td', { text: r.rows_parsed ? r.rows_parsed + ' rows → ' + r.data_tab : '' }), el('td', { text: r.events_imported || '' }), el('td', { text: r.uploaded_by })]));
+    });
+    box.replaceChildren(el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['Uploaded', 'File', 'Format', 'Org unit', 'Period', 'Description', 'Rows stored', 'Events', 'By'].map(function (h) { return el('th', { text: h }); }))]), tb])]));
+  }).catch(function (e) { box.replaceChildren(el('div', { class: 'msg', text: e.message })); });
+}
+
+// ================= BROWSE =================
+function loadTables() {
+  var sel = $('#br-table');
+  api('listTables', S.token).then(function (names) {
+    var cur = sel.value; sel.replaceChildren.apply(sel, names.map(function (n) { return el('option', { value: n, text: n }); }));
+    if (names.indexOf(cur) >= 0) sel.value = cur;
+  }).catch(function (e) { toast(e.message); });
+}
+function browse(offset) {
+  var out = $('#br-out'); out.replaceChildren(el('p', { class: 'muted', text: 'Loading…' }));
+  api('browse', S.token, $('#br-table').value, $('#br-q').value, offset, 100).then(function (d) {
+    S.browse = { offset: d.offset, total: d.total };
+    $('#br-info').textContent = d.total ? 'Rows ' + (d.offset + 1) + '–' + Math.min(d.total, d.offset + 100) + ' of ' + d.total.toLocaleString() : 'No rows.';
+    var tb = el('tbody'); d.rows.forEach(function (r) { tb.append(el('tr', null, r.map(function (c) { return el('td', { text: c }); }))); });
+    out.replaceChildren(el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, d.columns.map(function (c) { return el('th', { text: META.fields[c] ? META.fields[c].name : c, title: c }); }))]), tb])]));
+    $('#br-prev').disabled = d.offset === 0; $('#br-next').disabled = d.offset + 100 >= d.total;
+  }).catch(function (e) { out.replaceChildren(el('div', { class: 'msg', text: e.message })); });
+}
+$('#br-go').addEventListener('click', function () { browse(0); });
+$('#br-q').addEventListener('keydown', function (e) { if (e.key === 'Enter') browse(0); });
+$('#br-prev').addEventListener('click', function () { browse(Math.max(0, S.browse.offset - 100)); });
+$('#br-next').addEventListener('click', function () { browse(S.browse.offset + 100); });
+$('#br-csv').addEventListener('click', function () {
+  var b = this; busy(b, true);
+  api('browse', S.token, $('#br-table').value, $('#br-q').value, 0, 5000).then(function (d) {
+    downloadText($('#br-table').value + '.csv', [d.columns].concat(d.rows).map(csvRow).join('\r\n'), 'text/csv');
+    if (d.total > 5000) toast('Downloaded the first 5,000 rows. Open the Google Sheet for everything.');
+  }).catch(function (e) { toast(e.message); }).then(function () { busy(b, false); });
+});
+
+// ================= ADMIN =================
+var ROLE_LIST = ['ADMIN', 'CLINICIAN', 'DATA_ASSOCIATE', 'DISTRICT_VIEWER', 'PARTNER'];
+function loadAdmin() {
+  api('adminLinks', S.token).then(function (l) { $('#ad-sheet').href = l.sheet; $('#ad-folder').href = l.folder; });
+  loadUsers(); loadOus();
+}
+$('#ad-filter').addEventListener('change', loadUsers);
+function loadUsers() {
+  var box = $('#ad-users'); box.replaceChildren(el('p', { class: 'muted', text: 'Loading…' }));
+  api('adminUsers', S.token).then(function (users) {
+    var f = $('#ad-filter').value; users = users.filter(function (u) { return !f || u.status === f; });
+    if (!users.length) { box.replaceChildren(el('p', { class: 'muted', text: 'Nothing here.' })); return; }
+    var tb = el('tbody');
+    users.forEach(function (u) {
+      var role = el('select', null, ROLE_LIST.map(function (r) { return el('option', { value: r, text: r }); })); role.value = u.role || u.role_requested || 'CLINICIAN';
+      var ou = el('select'); fillOuSelect(ou, S.allOus, true); ou.value = u.org_unit || '';
+      var act = function (ch, label) { return el('button', { class: 'btn sm' + (ch.status === 'REJECTED' || ch.status === 'DISABLED' ? ' danger' : ''), text: label, onclick: function (e) {
+        busy(e.target, true); ch.role = role.value; ch.org_unit = ou.value;
+        api('adminUpdateUser', S.token, u.user_id, ch).then(function () { toast('Updated ' + u.email); loadUsers(); }).catch(function (er) { toast(er.message); busy(e.target, false); });
+      } }); };
+      var pill = { APPROVED: 'ok', PENDING: 'warn', REJECTED: 'bad', DISABLED: 'bad' }[u.status] || '';
+      tb.append(el('tr', null, [el('td', null, [el('b', { text: u.name }), el('div', { class: 'small muted', text: u.email + (u.phone ? ' · ' + u.phone : '') })]),
+        el('td', null, [el('span', { class: 'pill ' + pill, text: u.status })]), el('td', { class: 'small', text: u.role_requested }), el('td', null, [role]), el('td', null, [ou]),
+        el('td', { class: 'small', text: String(u.created_at).replace('T', ' ').slice(0, 16) }),
+        el('td', null, [el('div', { class: 'bar', style: 'margin:0' }, [
+          u.status !== 'APPROVED' ? act({ status: 'APPROVED' }, 'Approve') : act({}, 'Save'),
+          u.status === 'PENDING' ? act({ status: 'REJECTED' }, 'Reject') : null,
+          u.status === 'APPROVED' ? act({ status: 'DISABLED' }, 'Disable') : null,
+          el('button', { class: 'btn sm ghost', text: 'Reset password', onclick: function () {
+            var pw = window.prompt('New temporary password for ' + u.email + ' (8+ characters):'); if (!pw) return;
+            api('adminUpdateUser', S.token, u.user_id, { password: pw }).then(function () { toast('Password reset. Share it with the user securely.'); }).catch(function (er) { toast(er.message); });
+          } })])])]));
+    });
+    box.replaceChildren(el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['User', 'Status', 'Requested', 'Role', 'Org unit', 'Requested on', 'Actions'].map(function (h) { return el('th', { text: h }); }))]), tb])]));
+  }).catch(function (e) { box.replaceChildren(el('div', { class: 'msg', text: e.message })); });
+}
+function loadOus() {
+  api('orgUnits').then(function (ous) {
+    S.allOus = ous; fillOuSelect($('#ou-parent'), ous, true);
+    var tb = el('tbody'); ous.forEach(function (o) { tb.append(el('tr', null, [el('td', { text: o.code }), el('td', { text: o.name }), el('td', { text: o.level }), el('td', { text: o.parent_code })])); });
+    $('#ad-ous').replaceChildren(el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['Code', 'Name', 'Level', 'Parent'].map(function (h) { return el('th', { text: h }); }))]), tb])]));
+  });
+}
+$('#ou-add').addEventListener('click', function () {
+  api('adminAddOrgUnit', S.token, { code: $('#ou-code').value, name: $('#ou-name').value, level: $('#ou-level').value, parent_code: $('#ou-parent').value })
+    .then(function () { toast('Org unit added.'); $('#ou-code').value = ''; $('#ou-name').value = ''; loadOus(); return api('myOrgUnits', S.token); })
+    .then(function (ous) { if (ous) { S.ous = ous; [$('#cap-ou'), $('#up-ou')].forEach(function (s) { fillOuSelect(s, ous, false); }); } })
+    .catch(function (e) { toast(e.message); });
+});
+
+// ================= START =================
+api('orgUnits').then(function (ous) { S.allOus = ous; }).catch(function () {}).then(function () {
+  var t = store('mcc_token');
+  if (!t) return showAuth('login');
+  S.token = t;
+  api('whoami', t).then(function (u) { S.user = u; enterApp(); }).catch(function () { signOutLocal(); showAuth('login'); });
+});
+})();
+</script>

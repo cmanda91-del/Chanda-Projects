@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <!-- ============ AUTH ============ -->
+  <div id="auth" class="auth">
+    <div class="auth-card">
+      <div class="brand-row"><span class="logo" aria-hidden="true">✚</span><div><div class="brand">MCC Health Data Platform</div><div class="muted small">Maternal Continuum-of-Care · tracker &amp; data uploads</div></div></div>
+
+      <form id="login-form" class="stack" autocomplete="on">
+        <h2>Sign in</h2>
+        <label>Email<input name="email" type="email" required autocomplete="username"></label>
+        <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
+        <button class="btn primary" type="submit">Sign in</button>
+        <p class="small">New user? <a href="#" data-go="signup">Request an account</a></p>
+      </form>
+
+      <form id="signup-form" class="stack" hidden>
+        <h2>Request an account</h2>
+        <label>Full name<input name="name" required></label>
+        <label>Email<input name="email" type="email" required autocomplete="username"></label>
+        <label>Phone<input name="phone" type="tel"></label>
+        <label>Facility / org unit<select name="org_unit" required></select></label>
+        <label>Role requested
+          <select name="role">
+            <option value="CLINICIAN">Clinician (midwife / nurse / CO)</option>
+            <option value="DATA_ASSOCIATE">Data associate</option>
+            <option value="DISTRICT_VIEWER">District viewer</option>
+            <option value="PARTNER">Partner (aggregate / uploads, no personal data)</option>
+          </select></label>
+        <label>Password (8+ characters)<input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
+        <label>Confirm password<input name="password2" type="password" minlength="8" required autocomplete="new-password"></label>
+        <button class="btn primary" type="submit">Submit request</button>
+        <p class="small"><a href="#" data-go="login">Back to sign in</a></p>
+      </form>
+
+      <div id="pending" class="stack" hidden>
+        <h2>Request received</h2>
+        <p>An administrator will review your request. You will get an email when your account is approved.</p>
+        <p class="small"><a href="#" data-go="login">Back to sign in</a></p>
+      </div>
+      <div id="auth-msg" class="msg" role="alert"></div>
+    </div>
+  </div>
+
+  <!-- ============ APP SHELL ============ -->
+  <div id="shell" hidden>
+    <header class="topbar">
+      <button class="icon-btn" id="menu-toggle" aria-label="Menu">☰</button>
+      <span class="logo" aria-hidden="true">✚</span><span class="brand">MCC Health Data Platform</span>
+      <span class="spacer"></span>
+      <span id="who" class="who"></span>
+      <button class="btn ghost light" id="logout">Sign out</button>
+    </header>
+    <div class="layout">
+      <nav class="sidenav" id="sidenav">
+        <a href="#" data-view="home" class="nav">🏠 Home</a>
+        <a href="#" data-view="capture" class="nav" data-need="pii">🧾 Capture (tracker)</a>
+        <a href="#" data-view="upload" class="nav">⬆️ Data upload</a>
+        <a href="#" data-view="browse" class="nav">🗂️ Data browser</a>
+        <a href="#" data-view="admin" class="nav" data-need="admin">⚙️ Administration</a>
+      </nav>
+      <main class="main" id="main">
+        <div id="toast" class="toast" role="status"></div>
+
+        <!-- HOME -->
+        <section id="v-home" class="view">
+          <h1>Home</h1>
+          <p class="muted" id="home-sub"></p>
+          <div class="tiles" id="tiles"></div>
+          <div class="card">
+            <h3>Quick start</h3>
+            <ol class="small">
+              <li><b>Capture:</b> search for the woman by UMID, name, phone or NRC. If she is not found, register her, enroll the pregnancy (LMP), then open ANC 1.</li>
+              <li><b>Data upload:</b> upload registers or reports as Excel/CSV (rows are stored in the database and can be imported as events with the template), or Word/PDF (file kept in Drive, text captured for search).</li>
+              <li><b>Data browser:</b> view and download any table you have access to.</li>
+            </ol>
+          </div>
+        </section>
+
+        <!-- CAPTURE -->
+        <section id="v-capture" class="view" hidden>
+          <div class="bar">
+            <label class="inline">Org unit <select id="cap-ou"></select></label>
+            <input id="cap-q" type="search" placeholder="Search UMID, name, phone, NRC, ANC no.">
+            <button class="btn" id="cap-search">Search</button>
+            <button class="btn primary" id="cap-new" data-need="entry">+ Register woman</button>
+          </div>
+          <div id="cap-results"></div>
+          <div id="cap-person"></div>
+        </section>
+
+        <!-- FORM (registration + events) -->
+        <section id="v-form" class="view" hidden>
+          <div class="bar">
+            <button class="btn ghost" id="form-back">← Back</button>
+            <h1 id="form-title" class="grow"></h1>
+          </div>
+          <div id="form-banner"></div>
+          <div id="form-head" class="card form-head"></div>
+          <form id="form-body" novalidate></form>
+          <div class="bar sticky-actions">
+            <span id="form-msg" class="msg"></span><span class="spacer"></span>
+            <button class="btn" id="form-save" type="button">Save</button>
+            <button class="btn primary" id="form-complete" type="button">Save &amp; complete</button>
+          </div>
+        </section>
+
+        <!-- UPLOAD -->
+        <section id="v-upload" class="view" hidden>
+          <h1>Data upload</h1>
+          <div class="card">
+            <div class="grid2">
+              <label>File (Excel .xlsx/.xls, CSV, Word .docx, PDF; max 10 MB)
+                <input id="up-file" type="file" accept=".xlsx,.xls,.csv,.docx,.pdf,.txt"></label>
+              <label>Org unit<select id="up-ou"></select></label>
+              <label>Period (month)<input id="up-period" type="month"></label>
+              <label>Description<input id="up-desc" placeholder="e.g. ANC register Sept 2026"></label>
+              <label id="up-sheet-wrap" hidden>Worksheet<select id="up-sheet"></select></label>
+              <label id="up-import-wrap" hidden>Import rows as events (optional)
+                <select id="up-import"><option value="">No – store rows only</option></select></label>
+            </div>
+            <p class="small muted">To import rows as tracker events, use a template: columns <code>umid</code>, <code>event_date</code> (YYYY-MM-DD) and data element codes. Rows whose UMID has no active pregnancy in your facilities are skipped.</p>
+            <div class="bar"><select id="tpl-stage"></select><button class="btn ghost" id="tpl-dl">Download CSV template</button><span class="spacer"></span><button class="btn primary" id="up-go" disabled>Upload</button></div>
+            <div id="up-preview"></div>
+          </div>
+          <h3>Uploaded files</h3>
+          <div id="up-list"></div>
+        </section>
+
+        <!-- BROWSE -->
+        <section id="v-browse" class="view" hidden>
+          <h1>Data browser</h1>
+          <div class="bar">
+            <select id="br-table"></select>
+            <input id="br-q" type="search" placeholder="Filter rows…">
+            <button class="btn" id="br-go">Show</button>
+            <span class="spacer"></span>
+            <button class="btn ghost" id="br-csv">Download CSV</button>
+          </div>
+          <div id="br-info" class="small muted"></div>
+          <div id="br-out"></div>
+          <div class="bar"><button class="btn ghost" id="br-prev">‹ Previous</button><button class="btn ghost" id="br-next">Next ›</button></div>
+        </section>
+
+        <!-- ADMIN -->
+        <section id="v-admin" class="view" hidden>
+          <h1>Administration</h1>
+          <div class="bar"><a id="ad-sheet" class="btn ghost" target="_blank" rel="noopener">Open database (Google Sheet)</a><a id="ad-folder" class="btn ghost" target="_blank" rel="noopener">Open uploads folder (Drive)</a></div>
+          <div class="card"><h3>Users &amp; approvals</h3><div class="bar"><select id="ad-filter"><option value="PENDING">Pending</option><option value="">All</option><option value="APPROVED">Approved</option><option value="DISABLED">Disabled</option><option value="REJECTED">Rejected</option></select></div><div id="ad-users"></div></div>
+          <div class="card"><h3>Org units</h3>
+            <div class="grid4"><input id="ou-code" placeholder="Code (e.g. MoH facility code)"><input id="ou-name" placeholder="Name"><input id="ou-level" type="number" min="1" max="5" value="4" aria-label="Level"><select id="ou-parent"></select></div>
+            <div class="bar"><button class="btn" id="ou-add">Add org unit</button></div>
+            <div id="ad-ous"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script>window.MCC_META = <?!= metaJson() ?>;</script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <?!= include('App'); ?>
+</body>
+</html>
