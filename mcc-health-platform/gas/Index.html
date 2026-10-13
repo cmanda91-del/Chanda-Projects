@@ -62,6 +62,7 @@
         <a href="#" data-view="capture" class="nav" data-need="pii">🧾 Capture (tracker)</a>
         <a href="#" data-view="upload" class="nav">⬆️ Data upload</a>
         <a href="#" data-view="odk" class="nav" data-need="pii">📱 KoBo / ODK</a>
+        <a href="#" data-view="analytics" class="nav">📊 Analytics</a>
         <a href="#" data-view="browse" class="nav">🗂️ Data browser</a>
         <a href="#" data-view="admin" class="nav" data-need="admin">⚙️ Administration</a>
       </nav>
@@ -76,7 +77,7 @@
           <div class="card">
             <h3>Quick start</h3>
             <ol class="small">
-              <li><b>Capture:</b> search for the woman by UMID, name, phone or NRC. If she is not found, register her, enroll the pregnancy (LMP), then open ANC 1.</li>
+              <li><b>Capture:</b> search for the woman by Unique ID, name or phone. If she is not found, register her, enroll the pregnancy (LMP), then open ANC 1.</li>
               <li><b>Data upload:</b> upload registers or reports as Excel/CSV (rows are stored in the database and can be imported as events with the template), or Word/PDF (file kept in Drive, text captured for search).</li>
               <li><b>Data browser:</b> view and download any table you have access to.</li>
             </ol>
@@ -85,14 +86,22 @@
 
         <!-- CAPTURE -->
         <section id="v-capture" class="view" hidden>
+          <div class="subtabs" role="tablist"><button class="subtab" data-cap="clients" aria-selected="true">Clients</button><button class="subtab" data-cap="uploads" aria-selected="false">Uploaded data</button></div>
+          <div id="cap-uploads" hidden>
+            <p class="small muted">Spreadsheets and documents uploaded for your facilities. Open one to read its rows; rows that carry a Unique ID link to the client's record.</p>
+            <div id="cu-list"></div>
+            <div id="cu-detail"></div>
+          </div>
+          <div id="cap-clients">
           <div class="bar">
             <label class="inline">Org unit <select id="cap-ou"></select></label>
-            <input id="cap-q" type="search" placeholder="Search UMID, name, phone, NRC, ANC no.">
+            <input id="cap-q" type="search" placeholder="Search Unique ID, name, phone, ANC no., first ANC date">
             <button class="btn" id="cap-search">Search</button>
             <button class="btn primary" id="cap-new" data-need="entry">+ Register woman</button>
           </div>
           <div id="cap-results"></div>
           <div id="cap-person"></div>
+          </div>
         </section>
 
         <!-- FORM (registration + events) -->
@@ -137,7 +146,7 @@
         <!-- KOBO / ODK -->
         <section id="v-odk" class="view" hidden>
           <h1>KoBo / ODK data collection</h1>
-          <p class="muted small">Collect on phones with KoBoCollect, ODK Collect or KoBo web forms (Enketo), offline if needed. Each form finds the client by NRC, QR scan, UMID or name, and fills in her UMID, facility, EDD and HIV status from the client list.</p>
+          <p class="muted small">Collect on phones with KoBoCollect, ODK Collect or KoBo web forms (Enketo), offline if needed. Each visit form finds the client by facility + age + date of first ANC, card scan, Unique ID or name, and fills in her Unique ID, facility, EDD and risk flags from the client list.</p>
           <div class="card">
             <h3>1. Download the forms (XLSForm)</h3>
             <div id="odk-forms" class="stages"></div>
@@ -146,7 +155,7 @@
           <div class="card" data-need="entry">
             <h3>2. Download the client list (clients.csv)</h3>
             <p class="small">Attach it to every visit form as a <b>media file</b> named <code>clients.csv</code> (KoBo: form → Settings → Media; ODK Central: form → Attachments). Download a fresh copy whenever new women are registered.</p>
-            <p class="small msg">It contains names, NRCs and phone numbers for your facilities. Keep it on project devices only.</p>
+            <p class="small msg">It contains names, ages and phone numbers for your facilities. Keep it on project devices only.</p>
             <button class="btn" id="odk-clients">Download clients.csv</button>
           </div>
           <div class="card" data-need="admin">
@@ -156,12 +165,62 @@
             <p class="small"><b>ODK Central or a KoBo export:</b> download the submissions as CSV/XLSX with field names as headers and use <b>Data upload → Import as … events</b>. Group prefixes such as <code>g2/</code> are removed automatically.</p>
           </div>
           <div class="card">
+            <div class="bar"><h3 class="grow">Data received from KoBo / ODK</h3><input id="sub-q" type="search" placeholder="Filter (form, Unique ID, facility, status)"><button class="btn" id="sub-go">Show</button></div>
+            <p class="small muted">Every submission received, with its values. Saved visits also appear in the client's record in Capture (Source: Upload / KoBo).</p>
+            <div id="sub-list"></div>
+          </div>
+          <div class="card" data-need="admin">
+            <h3>Pull submissions from KoBoToolbox</h3>
+            <p class="small">Use this if you prefer not to set up a REST Service, or to fetch anything missed. Find the API token under KoBo → Account settings → Security, and each form's asset UID in its URL (…/forms/<b>aXyZ…</b>/).</p>
+            <div class="grid2">
+              <label>KoBo server<select id="kb-server"><option value="https://kf.kobotoolbox.org">kf.kobotoolbox.org (global)</option><option value="https://eu.kobotoolbox.org">eu.kobotoolbox.org</option></select></label>
+              <label>API token<input id="kb-token" type="password" placeholder="Saved – leave blank to keep" autocomplete="off"></label>
+              <label>Form asset UIDs (comma-separated)<input id="kb-assets" placeholder="aBc123…, dEf456…"></label>
+            </div>
+            <div class="bar"><button class="btn" id="kb-save">Save settings</button><button class="btn primary" id="kb-pull">Pull now</button><span id="kb-msg" class="small muted"></span></div>
+          </div>
+          <div class="card">
             <h3>How forms find the client</h3>
             <ol class="small">
-              <li><b>Registration form</b> creates a new woman, or updates her if the NRC is already registered. The platform assigns her UMID.</li>
-              <li><b>Visit forms</b> (ANC 1, ANC follow-up, delivery, PNC, loss, referral, exit) start with "Find client". The form then shows her UMID, facility, DOB, village, ANC number, HIV status, EDD and risk flags, and asks you to confirm before you continue.</li>
+              <li><b>Registration form</b> creates a new woman, or updates her if facility, age, first ANC date and surname match an existing client. The platform generates her Unique ID when the submission arrives.</li>
+              <li><b>Visit forms</b> (ANC 1, ANC follow-up, delivery, PNC, loss, referral, exit) start with "Find client": by age + date of first ANC at your facility, card scan, Unique ID or name. The form then shows her Unique ID, facility, age, first ANC date, village, ANC number, EDD and risk flags, and asks you to confirm before you continue.</li>
               <li><b>ANC 1</b> asks for the LMP when she has no active pregnancy. The platform then opens a new pregnancy record automatically.</li>
             </ol>
+          </div>
+        </section>
+
+        <!-- ANALYTICS -->
+        <section id="v-analytics" class="view" hidden>
+          <h1>Analytics</h1>
+          <div class="card filters">
+            <label>Org unit<select id="an-ou"></select></label>
+            <label>From<input id="an-from" type="month"></label>
+            <label>To<input id="an-to" type="month"></label>
+            <button class="btn primary" id="an-go">Update</button>
+            <span id="an-note" class="small muted"></span>
+          </div>
+          <div class="subtabs" role="tablist"><button class="subtab" data-an="dash" aria-selected="true">Dashboard</button><button class="subtab" data-an="viz" aria-selected="false">Visualizer</button></div>
+          <div id="an-dash">
+            <div class="tiles" id="an-kpis"></div>
+            <div class="chart-grid" id="an-charts"></div>
+            <div class="card"><div class="bar"><h3 class="grow">Facility comparison</h3><button class="btn sm ghost" id="an-fac-csv">CSV</button></div><div id="an-fac"></div></div>
+          </div>
+          <div id="an-viz" hidden>
+            <div class="card viz-controls">
+              <label>Data<select id="vz-stage"></select></label>
+              <label>Measure<select id="vz-measure"></select></label>
+              <label>Category (x-axis)<select id="vz-dim"></select></label>
+              <label>Series<select id="vz-series"></select></label>
+              <label>Filter field<select id="vz-ffield"></select></label>
+              <label>Filter value<select id="vz-fval"></select></label>
+              <label>Chart<select id="vz-type"><option value="bar">Column</option><option value="stacked">Stacked column</option><option value="hbar">Bar (horizontal)</option><option value="line">Line</option><option value="pie">Pie</option><option value="table">Table only</option></select></label>
+            </div>
+            <div class="card">
+              <div class="bar"><h3 class="grow" id="vz-title">—</h3><button class="btn sm ghost" id="vz-png">PNG</button><button class="btn sm ghost" id="vz-csv">CSV</button><button class="btn sm" id="vz-save">Save view</button></div>
+              <div class="chart-box tall"><canvas id="vz-canvas"></canvas></div>
+              <div id="vz-table"></div>
+            </div>
+            <div class="card"><h3>Saved views</h3><div id="vz-saved" class="stages"></div></div>
           </div>
         </section>
 
@@ -199,6 +258,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
   <?!= include('App'); ?>
 </body>
 </html>

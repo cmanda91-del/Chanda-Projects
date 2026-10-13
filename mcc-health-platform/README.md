@@ -22,7 +22,18 @@ Everything in `gas/` deploys as an Apps Script web app with a Google Sheet as th
 ## KoBoToolbox / ODK
 
 - **Forms.** In the app, **KoBo / ODK** downloads an XLSForm for registration and for each stage. Field names are the platform's data element codes. Every form converts with pyxform.
-- **Client list.** `clients.csv` is the lookup media file. Visit forms use it to find a client by NRC, QR/UMID or name and to fill in her UMID, facility, EDD and HIV status (`pulldata` and `select_one_from_file`).
+- **Client list.** `clients.csv` is the lookup media file. Visit forms use it to find a client by facility + age + date of first ANC, QR/Unique ID or name, and to fill in her Unique ID, facility, EDD and risk flags (`pulldata` and `select_one_from_file`).
+- **Pull from KoBo.** Admins can also save a KoBo API token and form asset UIDs, then press *Pull now* (`/api/koboPull`). Everything received is listed under *Data received from KoBo / ODK*.
 - **KoBo REST Service.** Point it at `POST /odk/submit/<key>`. The admin sees the URL on the KoBo / ODK page. Submissions are de-duplicated by instance ID and logged in the `Submissions` table.
 - **ODK Central or KoBo exports.** Import CSV/XLSX through Data upload. Group prefixes are removed automatically.
 - **Apps Script version.** `doPost` accepts the same JSON at `<web app URL>?key=<key>`.
+
+## Client identification
+
+- **Fields not collected.** NRC, HIV status and ART number are not collected at registration.
+- **How a client is identified.** By **facility + age at first ANC + date of first ANC**, with name or phone as a tie-breaker.
+- **Unique ID.** Generated when she is registered, as `FACILITY-YYMMDD-AGE-NN` (e.g. `LUM-FAC01-261013-24-01`):
+  - `YYMMDD` is the date of her first ANC visit.
+  - `AGE` is her age in years at that visit.
+  - `NN` is a sequence number for women who share all three.
+- **Older records.** Clients registered before this change keep their earlier IDs.

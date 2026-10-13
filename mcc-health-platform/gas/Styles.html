@@ -54,6 +54,7 @@ table.t tr.click { cursor:pointer; } table.t tr.click:hover td { background:var(
 .stages { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; }
 .card.match { border-color:#c7dcf2; margin-bottom:8px; }
 .risk { background:#fde8e6; color:var(--bad); border:1px solid #f3c1bc; padding:8px 12px; border-radius:var(--r); margin-bottom:10px; font-weight:600; }
+.info.big { font-size:15px; font-weight:600; }
 .info { background:#e8f1fb; color:#164d80; border:1px solid #c7dcf2; padding:8px 12px; border-radius:var(--r); margin-bottom:10px; }
 /* forms */
 .form-head { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px,1fr)); gap:12px; }
@@ -77,4 +78,17 @@ fieldset.sec legend { font-weight:600; padding:0 6px; margin-left:10px; }
   .main { padding:12px; }
   .who { display:none; }
 }
+.subtabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin:4px 0 12px; }
+.subtab { font:inherit; background:none; border:0; border-bottom:2px solid transparent; padding:8px 12px; cursor:pointer; color:var(--muted); }
+.subtab[aria-selected="true"] { color:var(--brand); border-bottom-color:var(--brand); font-weight:600; }
+.filters { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; }
+.filters label { width:auto; min-width:150px; }
+.chart-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap:14px; margin-bottom:14px; }
+.chart-card { background:#fff; border:1px solid var(--line); border-radius:var(--r); padding:12px 14px; min-width:0; }
+.chart-card h3 { margin:0; font-size:14px; } .chart-card .sub { font-size:12px; color:var(--muted); margin:2px 0 8px; }
+.chart-box { position:relative; height:260px; } .chart-box.tall { height:360px; }
+.viz-controls { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px,1fr)); gap:10px; }
+.tile .delta { display:block; font-size:12px; color:var(--muted); }
+.uprow { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px,1fr)); gap:4px 14px; font-size:12.5px; }
+.uprow div span { display:block; color:var(--muted); font-size:11.5px; }
 </style>

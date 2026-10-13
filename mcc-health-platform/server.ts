@@ -111,13 +111,41 @@ const G: any = {
 };
 const EXPORTS = ["setup", "adminLinks", "signup", "login", "logout", "whoami", "orgUnits", "myOrgUnits", "homeStats", "searchPersons", "duplicateCheck", "savePerson",
   "getPerson", "enroll", "saveEvent", "uploadFile", "listUploads", "listTables", "browse", "adminUsers", "adminUpdateUser", "adminAddOrgUnit",
-  "lookupClient", "odkForm", "odkClients", "adminIngestKey", "ingestSubmission", "auth_"];
+  "lookupClient", "odkForm", "odkClients", "adminIngestKey", "getUpload", "analyticsData", "listSubmissions", "adminKoboSettings", "ingestSubmission", "auth_"];
 const names = Object.keys(G);
 const App: any = new Function(...names, B.meta + "\n" + B.code + "\nreturn {" + EXPORTS.join(",") + "};")(...names.map((n) => G[n]));
 G.PropertiesService.getScriptProperties().setProperty("RUNTIME", "railway");
 App.setup();
 console.log("MCC platform ready. Sheets:", [...book.keys()].join(", "));
 
+// Pull submissions from the KoBoToolbox API (admin "Pull now").
+async function koboPull(token: string) {
+  const u = tokenUser(token);
+  if (!u || u.role !== "ADMIN") throw new Error("Admins only.");
+  const P = G.PropertiesService.getScriptProperties();
+  const server = (P.getProperty("KOBO_SERVER") || "https://kf.kobotoolbox.org").replace(/\/+$/, "");
+  const tok = P.getProperty("KOBO_TOKEN"), assets = (P.getProperty("KOBO_ASSETS") || "").split(",").filter(Boolean);
+  if (!tok || !assets.length) throw new Error("Save the KoBo API token and at least one form asset UID first.");
+  if (!P.getProperty("INGEST_KEY")) P.setProperty("INGEST_KEY", crypto.randomUUID().replace(/-/g, ""));
+  const out = { ok: 0, duplicate: 0, error: 0, errors: [] as string[] };
+  for (const uid of assets) {
+    let next: string | null = `${server}/api/v2/assets/${encodeURIComponent(uid)}/data/?format=json&limit=500`;
+    let pages = 0;
+    while (next && pages++ < 20) {
+      const r = await fetch(next, { headers: { Authorization: "Token " + tok, Accept: "application/json" } });
+      if (!r.ok) { out.error++; out.errors.push(`${uid}: KoBo answered HTTP ${r.status}${r.status === 401 || r.status === 403 ? " (check the token and that it can view this form)" : r.status === 404 ? " (check the asset UID)" : ""}`); break; }
+      const body: any = await r.json();
+      for (const rec of body.results || []) {
+        try { const res = App.ingestSubmission(P.getProperty("INGEST_KEY"), rec); res.status === "duplicate" ? out.duplicate++ : out.ok++; }
+        catch (e: any) { out.error++; if (out.errors.length < 10) out.errors.push(String(e?.message || e)); }
+      }
+      next = body.next || null;
+    }
+  }
+  P.setProperty("KOBO_LAST_PULL", new Date(Date.now() + 2 * 3600e3).toISOString().slice(0, 19));
+  G.Logger.log(`KoBo pull by ${u.email}: ${JSON.stringify(out)}`);
+  return out;
+}
 const PUBLIC = new Set(EXPORTS.filter((n) => !["setup", "auth_", "ingestSubmission"].includes(n)));
 const hdrs = { "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "same-origin" };
 const json = (o: any) => new Response(JSON.stringify(o), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...hdrs } });
@@ -131,6 +159,10 @@ Bun.serve({
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html"))
       return new Response(B.html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache", ...hdrs } });
     if (url.pathname === "/health") return new Response("ok");
+    if (req.method === "POST" && url.pathname === "/api/koboPull") {
+      try { return json({ val: await koboPull(((await req.json()) as any[])[0]) }); }
+      catch (e: any) { return json({ err: String(e?.message || e) }); }
+    }
     if (req.method === "POST" && url.pathname.startsWith("/api/")) {
       const fn = url.pathname.slice(5);
       if (!PUBLIC.has(fn)) return json({ err: "Unknown action." });
@@ -138,6 +170,8 @@ Bun.serve({
         const args = (await req.json()) as any[];
         let val = App[fn](...(Array.isArray(args) ? args : []));
         if (fn === "listUploads") val = val.map((r: any) => ({ ...r, drive_url: String(r.drive_url) + "?t=" + encodeURIComponent(args[0]) }));
+        if (fn === "getUpload") val = { ...val, drive_url: String(val.drive_url) + "?t=" + encodeURIComponent(args[0]) };
+        if (fn === "getPerson") val = { ...val, uploads: (val.uploads || []).map((r: any) => ({ ...r, drive_url: String(r.drive_url) + "?t=" + encodeURIComponent(args[0]) })) };
         if (fn === "uploadFile") val = { ...val, drive_url: String(val.drive_url) + "?t=" + encodeURIComponent(args[0]) };
         return json({ val: val === undefined ? null : val });
       } catch (e: any) {

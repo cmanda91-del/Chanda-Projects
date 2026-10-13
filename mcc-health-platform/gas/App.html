@@ -103,6 +103,7 @@ function show(v) {
   if (v === 'browse') loadTables();
   if (v === 'admin') loadAdmin();
   if (v === 'odk') loadOdk();
+  if (v === 'analytics') { if (!AN.data) loadAnalytics(); }
   window.scrollTo(0, 0);
 }
 $$('.nav').forEach(function (a) { a.addEventListener('click', function (e) { e.preventDefault(); show(a.dataset.view); }); });
@@ -126,7 +127,7 @@ function doSearch() {
   $('#cap-person').replaceChildren();
   var out = $('#cap-results'); out.replaceChildren(el('p', { class: 'muted', text: 'Searching…' }));
   api('searchPersons', S.token, $('#cap-q').value).then(function (rows) {
-    if (!rows.length) { out.replaceChildren(el('div', { class: 'info', text: 'No match. Check spelling, try phone or NRC, then register her if she is new.' })); return; }
+    if (!rows.length) { out.replaceChildren(el('div', { class: 'info', text: 'No match. Check spelling, try the phone number or UMID, then register her if she is new.' })); return; }
     var tb = el('tbody');
     rows.forEach(function (p) {
       tb.append(el('tr', { class: 'click', onclick: function () { openPerson(p.tei_id); } }, [
@@ -139,7 +140,7 @@ function doSearch() {
 $('#cap-new').addEventListener('click', function () { openForm({ kind: 'reg', org_unit: $('#cap-ou').value }); });
 
 function openPerson(teiId, keepEnrollment) {
-  show('capture'); $('#cap-results').replaceChildren();
+  show('capture'); capTab('clients'); $('#cap-results').replaceChildren();
   var box = $('#cap-person'); box.replaceChildren(el('p', { class: 'muted', text: 'Loading…' }));
   return api('getPerson', S.token, teiId).then(function (d) {
     S.person = d;
@@ -150,9 +151,7 @@ function openPerson(teiId, keepEnrollment) {
 }
 function stageName(c) { return (META.stages.filter(function (s) { return s.code === c; })[0] || {}).name || c; }
 function hivPos(extra) {
-  var p = S.person.person;
-  if (p.MCC_HIV_STATUS === 'POS') return true;
-  return S.person.events.some(function (e) { return e.MCC_HIV_RESULT === 'POS'; }) || (extra && extra.MCC_HIV_RESULT === 'POS');
+  return S.person.events.some(function (e) { return e.MCC_HIV_RESULT === 'POS' || e.MCC_HIV_RESULT === 'KNOWN_POS'; }) || (extra && (extra.MCC_HIV_RESULT === 'POS' || extra.MCC_HIV_RESULT === 'KNOWN_POS'));
 }
 function renderPerson() {
   var d = S.person, p = d.person, box = $('#cap-person');
@@ -160,7 +159,7 @@ function renderPerson() {
     el('div', { class: 'bar' }, [el('h2', { class: 'grow', text: (p.MCC_FIRST_NAME || '') + ' ' + (p.MCC_SURNAME || '') }),
       can('entry') ? el('button', { class: 'btn ghost', text: 'Edit details', onclick: function () { openForm({ kind: 'reg', tei_id: p.tei_id, values: p, org_unit: p.org_unit }); } }) : null]),
     el('div', { class: 'person-head' }, [['UMID', p.umid], ['Date of birth', p.MCC_DOB + (has(p.MCC_DOB) ? ' (' + yearsBetween(p.MCC_DOB, today()) + ' y)' : '')], ['Village / zone', [p.MCC_VILLAGE, p.MCC_ZONE].filter(has).join(' / ')],
-      ['Phone', p.MCC_PHONE], ['HIV status', p.MCC_HIV_STATUS], ['ANC reg. no.', p.MCC_ANC_REG_NO], ['Facility', p.org_unit]]
+      ['Phone', p.MCC_PHONE], ['First ANC', p.MCC_FIRST_ANC_DATE], ['Age at first ANC', has(p.MCC_DOB) && has(p.MCC_FIRST_ANC_DATE) ? yearsBetween(p.MCC_DOB, p.MCC_FIRST_ANC_DATE) + ' y' : ''], ['ANC reg. no.', p.MCC_ANC_REG_NO], ['Facility', p.org_unit]]
       .map(function (x) { return el('div', null, [el('span', { text: x[0] }), x[1] || '—']); }))]);
   var enrCard = el('div', { class: 'card' });
   var sel = el('select', { 'aria-label': 'Pregnancy' });
@@ -181,7 +180,8 @@ function renderPerson() {
       } })])]), msg);
   }
   box.replaceChildren(head, enrCard);
-  if (!S.enrollment) return;
+  if (S.newUmid === p.umid) { box.prepend(el('div', { class: 'info big', text: 'Registered. Unique ID: ' + p.umid + ' — write it on her ANC card. Next: enroll the pregnancy below, then open ANC 1.' })); S.newUmid = null; }
+  if (!S.enrollment) { box.append(uploadsCard(d.uploads)); return; }
   var en = S.enrollment, evs = d.events.filter(function (e) { return e.enrollment_id === en.enrollment_id; })
     .sort(function (a, b) { return String(a.event_date).localeCompare(String(b.event_date)); });
   var anc1 = evs.filter(function (e) { return e.stage === 'ANC1'; })[0];
@@ -205,11 +205,12 @@ function renderPerson() {
     var key = e.stage === 'DEL' ? (e.MCC_DEL_MODE || '') + ' ' + (e.MCC_B1_OUTCOME || '') : e.stage === 'PNC' ? (e.MCC_PNC_WINDOW || '') : e.stage === 'EXIT' ? e.MCC_EXIT_OUTCOME : has(e.MCC_GA_WK) ? 'GA ' + e.MCC_GA_WK + ' wk' : '';
     tb.append(el('tr', { class: 'click', onclick: function () { openForm({ kind: 'event', stage: e.stage, event: e }); } }, [
       el('td', { text: e.event_date }), el('td', { text: stageName(e.stage) }), el('td', null, [el('span', { class: 'pill ' + (e.status === 'COMPLETED' ? 'ok' : ''), text: e.status })]),
-      el('td', { text: key }), el('td', { text: String(e.MCC_HIGH_RISK) === 'true' ? 'High risk' : '' }), el('td', { text: e.updated_by })]));
+      el('td', { text: key }), el('td', { text: String(e.MCC_HIGH_RISK) === 'true' ? 'High risk' : '' }), el('td', { text: /upload|ingest/.test(e.created_by || '') ? 'Upload / KoBo' : 'Form' }), el('td', { text: e.updated_by })]));
   });
-  card.append(evs.length ? el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['Date', 'Stage', 'Status', 'Summary', 'Risk', 'Last edited by'].map(function (h) { return el('th', { text: h }); }))]), tb])])
+  card.append(evs.length ? el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['Date', 'Stage', 'Status', 'Summary', 'Risk', 'Source', 'Last edited by'].map(function (h) { return el('th', { text: h }); }))]), tb])])
     : el('p', { class: 'muted', text: 'No events yet. Start with ANC 1.' }));
   box.append(card);
+  box.append(uploadsCard(d.uploads));
 }
 
 // ================= FORMS =================
@@ -278,6 +279,7 @@ function openForm(opts) {
   if (reg) {
     var ou = el('select', { id: 'f-ou' }); fillOuSelect(ou, S.ous, false); ou.value = opts.org_unit || (S.ous[0] && S.ous[0].code);
     head.append(el('label', null, ['Registering facility', ou]));
+    if (!opts.tei_id) ou.addEventListener('change', function () { recompute(); scheduleLookup(); });
     if (opts.tei_id) head.append(el('label', null, ['UMID', el('input', { value: opts.values.umid, readonly: true })]));
   } else {
     var date = el('input', { type: 'date', id: 'f-date', max: today(), value: ev ? String(ev.event_date).slice(0, 10) : today() });
@@ -303,7 +305,7 @@ function openForm(opts) {
   });
   $('#form-complete').hidden = reg; $('#form-save').textContent = reg ? 'Save' : 'Save draft';
   $('#form-lookup').replaceChildren();
-  if (reg && !opts.tei_id) $('#form-lookup').append(el('div', { class: 'info', text: 'Enter the NRC (or first name and surname, or phone). If she is already registered anywhere, her UMID, facility and details load automatically so you only update what changed.' }));
+  if (reg && !opts.tei_id) $('#form-lookup').append(el('div', { class: 'info', text: 'Choose the facility, then enter her age (or date of birth) and the date of her first ANC visit. If a woman with that facility, age and first ANC date is already registered, her Unique ID and details load automatically so you only update what changed. Name or phone also finds her. A new Unique ID is generated when you save.' }));
   if (reg && opts.tei_id && opts.loaded) $('#form-lookup').append(el('div', { class: 'info', text: 'Existing client loaded (' + (opts.values.umid || '') + ', ' + (opts.values.org_unit || '') + '). Update what changed and save, then add today\'s visit from her record.' }));
   $('#form-msg').textContent = '';
   recompute();
@@ -311,12 +313,12 @@ function openForm(opts) {
 $('#form-back').addEventListener('click', function () { if (S.form && !S.form.reg || (S.form && S.form.opts.tei_id)) openPerson(S.person.person.tei_id, S.enrollment && S.enrollment.enrollment_id); else show('capture'); });
 
 // ---------- find existing client while registering ----------
-var LOOKUP_FIELDS = ['MCC_NRC', 'MCC_FIRST_NAME', 'MCC_SURNAME', 'MCC_PHONE'];
+var LOOKUP_FIELDS = ['MCC_DOB', 'MCC_FIRST_ANC_DATE', 'MCC_FIRST_NAME', 'MCC_SURNAME', 'MCC_PHONE'];
 var lookupTimer = null, lookupSeq = 0;
 function scheduleLookup() { clearTimeout(lookupTimer); lookupTimer = setTimeout(runLookup, 450); }
 function runLookup() {
   var v = S.form.values, q = {};
-  if (/^[0-9]{6}\/[0-9]{2}\/[0-9]$/.test(v.MCC_NRC || '')) q.nrc = v.MCC_NRC;
+  if (has(v.MCC_DOB) && has(v.MCC_FIRST_ANC_DATE) && $('#f-ou')) { q.facility = $('#f-ou').value; q.age = yearsBetween(v.MCC_DOB, v.MCC_FIRST_ANC_DATE); q.first_anc = v.MCC_FIRST_ANC_DATE; }
   if ((v.MCC_FIRST_NAME || '').length >= 2 && (v.MCC_SURNAME || '').length >= 2) { q.first = v.MCC_FIRST_NAME; q.surname = v.MCC_SURNAME; }
   if ((v.MCC_PHONE || '').replace(/\D/g, '').length >= 9) q.phone = v.MCC_PHONE;
   if (!Object.keys(q).length) return;
@@ -325,8 +327,8 @@ function runLookup() {
     if (seq !== lookupSeq || !S.form || !S.form.reg) return;
     box.replaceChildren();
     if (!hits.length) { box.append(el('div', { class: 'info', text: 'No existing client matches. Continue to register her as new.' })); return; }
-    var exact = hits.filter(function (h) { return h.match === 'NRC'; })[0];
-    if (exact) { loadExisting(exact.tei_id); return; }
+    var exact = hits.filter(function (h) { return h.match === 'Facility, age and first ANC'; });
+    if (exact.length === 1) { loadExisting(exact[0].tei_id); return; }
     box.append(el('div', { class: 'risk', text: hits.length + ' possible existing client' + (hits.length > 1 ? 's' : '') + '. Load her record to avoid a duplicate:' }));
     hits.forEach(function (h) { box.append(clientCard(h)); });
   }).catch(function (e) { box.replaceChildren(el('div', { class: 'msg', text: e.message })); });
@@ -335,7 +337,7 @@ function clientCard(h) {
   var a = h.active;
   return el('div', { class: 'card match' }, [
     el('div', { class: 'bar', style: 'margin:0' }, [el('b', { class: 'grow', text: h.name + ' · ' + h.umid }), el('span', { class: 'pill', text: 'Matched on ' + h.match })]),
-    el('div', { class: 'person-head' }, [['NRC', h.nrc], ['DOB', h.dob], ['Facility', h.facility_name], ['Village', h.village], ['Phone', h.phone], ['HIV', h.hiv_status], ['ANC no.', h.anc_reg_no],
+    el('div', { class: 'person-head' }, [['Age at first ANC', h.age === '' ? '' : h.age + ' y'], ['First ANC', h.first_anc], ['Facility', h.facility_name], ['DOB', h.dob], ['Village', h.village], ['Phone', h.phone], ['ANC no.', h.anc_reg_no],
       ['Pregnancy', a ? 'Active · EDD ' + a.edd : (h.pregnancies ? 'None active (' + h.pregnancies + ' before)' : 'Not enrolled')],
       ['Last visit', a && a.last ? a.last.stage + ', ' + a.last.date : '—']].map(function (x) { return el('div', null, [el('span', { text: x[0] }), x[1] || '—']); })),
     a && a.last && String(a.last.risk) === 'true' ? el('div', { class: 'risk', style: 'margin:8px 0 0', text: 'High risk: ' + a.last.reasons }) : null,
@@ -361,7 +363,46 @@ function loadOdk() {
     });
   }
   $$('#v-odk [data-need]').forEach(function (x) { x.hidden = !can(x.dataset.need); });
-  if (can('admin')) api('adminIngestKey', S.token, false).then(function (r) { $('#odk-url').value = r.url; }).catch(function (e) { toast(e.message); });
+  if (can('admin')) {
+    api('adminIngestKey', S.token, false).then(function (r) { $('#odk-url').value = r.url; }).catch(function (e) { toast(e.message); });
+    api('adminKoboSettings', S.token, null).then(showKobo).catch(function () {});
+  }
+  loadSubmissions();
+}
+function showKobo(k) {
+  var sel = $('#kb-server');
+  if (![].some.call(sel.options, function (o) { return o.value === k.server; })) sel.append(el('option', { value: k.server, text: k.server }));
+  sel.value = k.server; $('#kb-assets').value = k.assets;
+  $('#kb-token').placeholder = k.hasToken ? 'Saved – leave blank to keep' : 'Paste your KoBo API token';
+  $('#kb-msg').textContent = k.lastPull ? 'Last pull: ' + k.lastPull.replace('T', ' ').slice(0, 16) : '';
+}
+$('#kb-save').addEventListener('click', function () {
+  api('adminKoboSettings', S.token, { server: $('#kb-server').value, token: $('#kb-token').value, assets: $('#kb-assets').value })
+    .then(function (k) { $('#kb-token').value = ''; showKobo(k); toast('KoBo settings saved.'); }).catch(function (e) { toast(e.message); });
+});
+$('#kb-pull').addEventListener('click', function () {
+  var b = this; busy(b, true); $('#kb-msg').textContent = 'Pulling…';
+  api('koboPull', S.token).then(function (r) {
+    $('#kb-msg').textContent = r.ok + ' saved, ' + r.duplicate + ' already received, ' + r.error + ' with problems' + (r.errors && r.errors.length ? ': ' + r.errors.slice(0, 3).join(' | ') : '') + '.';
+    loadSubmissions();
+  }).catch(function (e) { $('#kb-msg').textContent = e.message; }).then(function () { busy(b, false); });
+});
+$('#sub-go').addEventListener('click', loadSubmissions);
+$('#sub-q').addEventListener('keydown', function (e) { if (e.key === 'Enter') loadSubmissions(); });
+function loadSubmissions() {
+  var box = $('#sub-list'); box.replaceChildren(el('p', { class: 'muted small', text: 'Loading…' }));
+  api('listSubmissions', S.token, $('#sub-q').value).then(function (rows) {
+    if (!rows.length) { box.replaceChildren(el('p', { class: 'muted small', text: 'Nothing received yet.' })); return; }
+    var tb = el('tbody');
+    rows.forEach(function (r) {
+      var detail = el('tr', { hidden: true }, [el('td', { colspan: 7 }, [el('div', { class: 'uprow' }, r.values.map(function (x) { return el('div', null, [el('span', { text: x[0] }), x[1]]); }))])]);
+      tb.append(el('tr', null, [el('td', { text: String(r.received_at).replace('T', ' ').slice(0, 16) }), el('td', { text: r.form === 'REG' ? 'Registration' : stageName(r.form) }),
+        el('td', { text: r.facility }), el('td', { text: r.umid }), el('td', null, [el('span', { class: 'pill ' + (r.status === 'OK' ? 'ok' : 'bad'), text: r.status })]), el('td', { text: r.message }),
+        el('td', null, [el('div', { class: 'bar', style: 'margin:0' }, [el('button', { class: 'btn sm ghost', text: 'Values', onclick: function () { detail.hidden = !detail.hidden; } }),
+          r.umid && r.status === 'OK' ? el('button', { class: 'btn sm', text: 'Open client', onclick: function () { openClientByKey(r.umid); } }) : null])])]), detail);
+    });
+    box.replaceChildren(el('div', { class: 'tw', style: 'max-height:55vh' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['Received', 'Form', 'Facility', 'Unique ID', 'Status', 'Message', ''].map(function (h) { return el('th', { text: h }); }))]), tb])]));
+  }).catch(function (e) { box.replaceChildren(el('div', { class: 'msg', text: e.message })); });
 }
 function downloadXlsForm(code, btn) {
   if (!window.XLSX) { toast('The spreadsheet library did not load. Check the connection and reload the page.'); return; }
@@ -392,8 +433,12 @@ function recompute() {
   var hide = function () { Array.prototype.forEach.call(arguments, function (f) { r.hide[f] = true; }); };
   var evDate = F.reg ? today() : ($('#f-date') && $('#f-date').value) || today();
   if (F.reg) {
-    if (v.MCC_HIV_STATUS !== 'POS') hide('MCC_ART_NO');
-    if (has(v.MCC_NRC) && !/^[0-9]{6}\/[0-9]{2}\/[0-9]$/.test(v.MCC_NRC)) r.err.MCC_NRC = 'NRC must look like 123456/78/1';
+    if (has(v.MCC_FIRST_ANC_DATE) && v.MCC_FIRST_ANC_DATE > today()) r.err.MCC_FIRST_ANC_DATE = 'Cannot be in the future.';
+    if (has(v.MCC_DOB) && has(v.MCC_FIRST_ANC_DATE)) {
+      var ag = yearsBetween(v.MCC_DOB, v.MCC_FIRST_ANC_DATE);
+      if (ag < 10 || ag > 55) r.err.MCC_DOB = 'Age at first ANC must be 10–55 years (now ' + ag + ').';
+      else if (!F.opts.tei_id) r.info.push('Unique ID will be generated on save: ' + ($('#f-ou') ? $('#f-ou').value : '') + '-' + v.MCC_FIRST_ANC_DATE.slice(2).replace(/-/g, '') + '-' + ('0' + ag).slice(-2) + '-nn');
+    }
     if (has(v.MCC_DOB)) r.assign.MCC_ADOLESCENT = String(yearsBetween(v.MCC_DOB, today()) < 20);
     r.assign.MCC_SMS_PHONE = v.MCC_CONSENT_SMS === 'true' ? (v.MCC_PHONE || '') : '';
     if (num(v.MCC_TRAVEL_MIN) >= 60) r.warn.MCC_TRAVEL_MIN = 'Far from facility: discuss maternity waiting home.';
@@ -405,6 +450,7 @@ function recompute() {
   var last = function (f) { for (var i = prior.length - 1; i >= 0; i--) if (has(prior[i][f])) return prior[i][f]; return ''; };
   var anc1 = evs.filter(function (e) { return e.stage === 'ANC1'; })[0] || {};
   var P = S.person.person, pos = hivPos(v);
+  var knownPos = prior.some(function (e) { return e.MCC_HIV_RESULT === 'POS' || e.MCC_HIV_RESULT === 'KNOWN_POS'; });
   if (en.lmp > evDate) r.banner.push('Visit date is before the LMP.');
   var dating = code === 'ANC1' ? v.MCC_DATING_METHOD : anc1.MCC_DATING_METHOD;
   var edd = code === 'ANC1' ? v.MCC_EDD : anc1.MCC_EDD;
@@ -433,10 +479,10 @@ function recompute() {
     if (ga < 28) hide('MCC_PRESENTATION');
     if (has(v.MCC_FHR) && (num(v.MCC_FHR) < 110 || num(v.MCC_FHR) > 160)) r.warn.MCC_FHR = 'FHR outside 110–160.';
     if (code === 'ANC1' && has(v.MCC_PARITY) && has(v.MCC_GRAVIDA) && num(v.MCC_PARITY) >= num(v.MCC_GRAVIDA)) r.err.MCC_PARITY = 'Parity must be lower than gravida.';
-    if (P.MCC_HIV_STATUS === 'POS') hide('MCC_HIV_RESULT', 'MCC_HIV_TEST_TYPE');
+    if (knownPos) hide('MCC_HIV_RESULT', 'MCC_HIV_TEST_TYPE');
     if (!pos) r.hideSec['C6 HIV care (PMTCT)'] = true;
-    if (v.MCC_HIV_RESULT === 'POS' && P.MCC_HIV_STATUS !== 'POS') r.info.push('New HIV positive: confirm per algorithm, start ART the same day, and update HIV status on the client details.');
-    if (code === 'ANCFU' && P.MCC_HIV_STATUS !== 'POS' && ga >= 28 && evs.filter(function (e) { return e.MCC_HIV_RESULT === 'NEG'; }).length < 2 && !has(v.MCC_HIV_RESULT)) r.warn.MCC_HIV_RESULT = 'HIV retest due (3rd trimester).';
+    if (v.MCC_HIV_RESULT === 'POS' && !knownPos) r.info.push('New HIV positive: confirm per algorithm and start ART the same day.');
+    if (code === 'ANCFU' && !knownPos && ga >= 28 && evs.filter(function (e) { return e.MCC_HIV_RESULT === 'NEG'; }).length < 2 && !has(v.MCC_HIV_RESULT)) r.warn.MCC_HIV_RESULT = 'HIV retest due (3rd trimester).';
     if (has(v.MCC_VL_RESULT)) r.assign.MCC_VL_CATEGORY = num(v.MCC_VL_RESULT) < 50 ? 'UNDETECTABLE' : num(v.MCC_VL_RESULT) < 1000 ? 'SUPPRESSED' : 'UNSUPPRESSED';
     if (pos && (v.MCC_ART_STATUS === 'NOT_ON_ART' || v.MCC_ART_STATUS === 'REFERRED')) r.warn.MCC_ART_STATUS = 'Not on ART: initiate or confirm linkage today.';
     if (v.MCC_SYPH_RESULT !== 'REACTIVE') hide('MCC_BPG_DOSE', 'MCC_SYPH_PARTNER_TX');
@@ -515,7 +561,7 @@ function recompute() {
     if (/ECLAMPSIA|SEVERE_PE/.test(v.MCC_DEL_COMPLICATIONS || '') && !has(v.MCC_MGSO4)) r.warn.MCC_MGSO4 = 'Record MgSO4 for eclampsia / severe pre-eclampsia.';
     if (v.MCC_MAT_OUTCOME !== 'DIED') hide('MCC_MAT_DEATH_DATE', 'MCC_MAT_DEATH_CAUSE', 'MCC_MDSR_NOTIFIED');
     else r.banner.push('MATERNAL DEATH: notify MDSR within 24 hours and complete the Exit stage.');
-    if (P.MCC_HIV_STATUS === 'POS') hide('MCC_HIV_RESULT', 'MCC_HIV_TEST_TYPE');
+    if (knownPos) hide('MCC_HIV_RESULT', 'MCC_HIV_TEST_TYPE');
   }
   if (code === 'PNC') {
     var del = evs.filter(function (e) { return e.stage === 'DEL'; })[0];
@@ -526,7 +572,7 @@ function recompute() {
       if (days < 0) r.err.MCC_PNC_DAYS = 'PNC is dated before the delivery.';
       var win = days <= 2 ? 'W48H' : days >= 3 && days <= 7 ? 'D3_7' : days >= 8 && days <= 14 ? 'D8_14' : days >= 42 && days <= 49 ? 'W6' : 'OUTSIDE';
       r.assign.MCC_PNC_WINDOW = win; r.assign.MCC_PNC_IN_WINDOW = String(win !== 'OUTSIDE');
-      if (win === 'W6' && P.MCC_HIV_STATUS !== 'POS' && /EBF|MIXED/.test(v.MCC_BF_STATUS || '') && !has(v.MCC_HIV_RESULT)) r.warn.MCC_HIV_RESULT = 'HIV retest due (breastfeeding).';
+      if (win === 'W6' && !knownPos && /EBF|MIXED/.test(v.MCC_BF_STATUS || '') && !has(v.MCC_HIV_RESULT)) r.warn.MCC_HIV_RESULT = 'HIV retest due (breastfeeding).';
     }
     r.assign.MCC_PNC_CONTACT_NO = String(evs.filter(function (e) { return e.stage === 'PNC' && String(e.event_date) <= evDate; }).length + 1);
     if (num(v.MCC_TEMP) >= 38) r.warn.MCC_TEMP = 'Fever: assess for puerperal sepsis.';
@@ -535,7 +581,7 @@ function recompute() {
     if (has(v.MCC_MUAC)) r.assign.MCC_MUAC_CLASS = num(v.MCC_MUAC) < 21 ? 'SAM' : num(v.MCC_MUAC) < 23 ? 'MAM' : 'NORMAL';
     hide('MCC_PNC_VITA');
     if (v.MCC_FP_COUNSELLED === 'true' && !has(v.MCC_FP_METHOD)) r.warn.MCC_FP_METHOD = 'Record the method adopted (or "None").';
-    if (P.MCC_HIV_STATUS === 'POS') hide('MCC_HIV_RESULT', 'MCC_HIV_TEST_TYPE');
+    if (knownPos) hide('MCC_HIV_RESULT', 'MCC_HIV_TEST_TYPE');
   }
   if (code === 'ANC1' || code === 'ANCFU' || code === 'PNC') {
     if (has(v.MCC_MH_SCORE) && num(v.MCC_MH_SCORE) >= 10 && v.MCC_MH_RESULT === 'NEG') r.err.MCC_MH_RESULT = 'Score is at/above the cut-off.';
@@ -587,7 +633,7 @@ function saveForm(complete) {
   if (F.reg) {
     var go = function () {
       return api('savePerson', S.token, { tei_id: F.opts.tei_id, org_unit: $('#f-ou').value, values: vals })
-        .then(function (p) { toast(F.opts.tei_id ? 'Details saved.' : 'Registered: ' + p.umid); return openPerson(p.tei_id); });
+        .then(function (p) { toast(F.opts.tei_id ? 'Details saved.' : 'Registered. Unique ID: ' + p.umid); if (!F.opts.tei_id) S.newUmid = p.umid; return openPerson(p.tei_id); });
     };
     var pre = F.opts.tei_id ? Promise.resolve([]) : api('duplicateCheck', S.token, vals);
     pre.then(function (dups) {
@@ -780,6 +826,326 @@ $('#ou-add').addEventListener('click', function () {
     .then(function (ous) { if (ous) { S.ous = ous; [$('#cap-ou'), $('#up-ou')].forEach(function (s) { fillOuSelect(s, ous, false); }); } })
     .catch(function (e) { toast(e.message); });
 });
+
+// ================= CAPTURE: UPLOADED DATA =================
+$$('[data-cap]').forEach(function (b) { b.addEventListener('click', function () { capTab(b.dataset.cap); }); });
+function capTab(t) {
+  $$('[data-cap]').forEach(function (x) { x.setAttribute('aria-selected', String(x.dataset.cap === t)); });
+  $('#cap-clients').hidden = t !== 'clients'; $('#cap-uploads').hidden = t !== 'uploads';
+  if (t === 'uploads') loadCapUploads();
+}
+function loadCapUploads() {
+  var box = $('#cu-list'); box.replaceChildren(el('p', { class: 'muted', text: 'Loading…' })); $('#cu-detail').replaceChildren();
+  api('listUploads', S.token).then(function (rows) {
+    if (!rows.length) { box.replaceChildren(el('div', { class: 'info', text: 'Nothing uploaded yet. Use Data upload to add registers, reports or KoBo/ODK exports.' })); return; }
+    var tb = el('tbody');
+    rows.forEach(function (r) {
+      tb.append(el('tr', { class: 'click', onclick: function () { openUpload(r); } }, [el('td', { text: String(r.uploaded_at).replace('T', ' ').slice(0, 16) }), el('td', { text: r.file_name }),
+        el('td', { text: r.format }), el('td', { text: r.org_unit }), el('td', { text: r.period }), el('td', { text: r.description }),
+        el('td', { text: r.rows_parsed ? r.rows_parsed + ' rows' : (r.text_excerpt ? 'text' : 'file') }), el('td', { text: r.events_imported || '' })]));
+    });
+    box.replaceChildren(el('div', { class: 'tw', style: 'max-height:40vh' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['Uploaded', 'File', 'Format', 'Org unit', 'Period', 'Description', 'Content', 'Events imported'].map(function (h) { return el('th', { text: h }); }))]), tb])]));
+  }).catch(function (e) { box.replaceChildren(el('div', { class: 'msg', text: e.message })); });
+}
+var UMID_RE = /^[A-Z0-9-]+-(\d{4}-\d{5}|\d{6}-\d{2}-\d{2})$/i;
+function openUpload(r) {
+  var box = $('#cu-detail');
+  var head = el('div', { class: 'bar' }, [el('h3', { class: 'grow', text: r.file_name + (r.period ? ' · ' + r.period : '') }),
+    el('a', { class: 'btn sm ghost', href: r.drive_url, target: '_blank', rel: 'noopener', text: 'Open original file' })]);
+  if (!r.data_tab) {
+    box.replaceChildren(el('div', { class: 'card' }, [head, el('p', { class: 'muted', text: 'Loading…' })]));
+    api('getUpload', S.token, r.upload_id).then(function (u) {
+      box.replaceChildren(el('div', { class: 'card' }, [head, u.text_excerpt ? el('pre', { class: 'txt', style: 'max-height:60vh', text: u.text_excerpt }) : el('p', { class: 'muted', text: 'No text was extracted from this file. Open the original.' })]));
+    }).catch(function (e) { toast(e.message); });
+    return;
+  }
+  var q = el('input', { type: 'search', placeholder: 'Filter rows (name, UMID…)' });
+  var info = el('span', { class: 'small muted' }), out = el('div'), off = 0;
+  var prev = el('button', { class: 'btn sm ghost', text: '‹ Previous' }), next = el('button', { class: 'btn sm ghost', text: 'Next ›' });
+  var load = function () {
+    out.replaceChildren(el('p', { class: 'muted', text: 'Loading…' }));
+    api('browse', S.token, r.data_tab, q.value, off, 100).then(function (d) {
+      info.textContent = d.total ? 'Rows ' + (off + 1) + '–' + Math.min(d.total, off + 100) + ' of ' + d.total.toLocaleString() : 'No rows.';
+      prev.disabled = off === 0; next.disabled = off + 100 >= d.total;
+      var tb = el('tbody');
+      d.rows.forEach(function (row) {
+        var key = row.filter(function (c) { return UMID_RE.test(String(c).trim()); })[0];
+        tb.append(el('tr', null, [el('td', null, [key && can('pii') ? el('button', { class: 'btn sm', text: 'Open client', onclick: function () { openClientByKey(String(key).trim()); } }) : ''])]
+          .concat(row.map(function (c) { return el('td', { text: c }); }))));
+      });
+      out.replaceChildren(el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, [el('th', { text: '' })].concat(d.columns.map(function (c) { return el('th', { text: META.fields[c] ? META.fields[c].name : c, title: c }); })))]), tb])]));
+    }).catch(function (e) { out.replaceChildren(el('div', { class: 'msg', text: e.message })); });
+  };
+  q.addEventListener('keydown', function (e) { if (e.key === 'Enter') { off = 0; load(); } });
+  prev.addEventListener('click', function () { off = Math.max(0, off - 100); load(); });
+  next.addEventListener('click', function () { off += 100; load(); });
+  box.replaceChildren(el('div', { class: 'card' }, [head, el('div', { class: 'bar' }, [q, el('button', { class: 'btn', text: 'Filter', onclick: function () { off = 0; load(); } }), info]), out, el('div', { class: 'bar' }, [prev, next])]));
+  load();
+  box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function openClientByKey(k) {
+  api('lookupClient', S.token, { umid: k }).then(function (h) {
+    if (!h.length) { toast('No registered client with ' + k + '.'); return; }
+    capTab('clients'); openPerson(h[0].tei_id);
+  }).catch(function (e) { toast(e.message); });
+}
+function uploadsCard(list) {
+  var card = el('div', { class: 'card' }, [el('h3', { text: 'Uploaded records for this client' })]);
+  if (!list || !list.length) { card.append(el('p', { class: 'small muted', text: 'No uploaded spreadsheet row or document mentions her Unique ID.' })); return card; }
+  list.forEach(function (u) {
+    var top = el('div', { class: 'bar', style: 'margin:0 0 6px' }, [el('b', { class: 'grow', text: u.file_name + (u.period ? ' · ' + u.period : '') + (u.kind === 'row' ? ' · row ' + u.row_no : '') }),
+      el('span', { class: 'small muted', text: 'Uploaded ' + String(u.uploaded_at).slice(0, 10) }), el('a', { class: 'btn sm ghost', href: u.drive_url, target: '_blank', rel: 'noopener', text: 'File' })]);
+    var body = u.kind === 'row'
+      ? el('div', { class: 'uprow' }, u.header.map(function (h, i) { return u.row[i] ? el('div', null, [el('span', { text: META.fields[h] ? META.fields[h].name : h }), u.row[i]]) : null; }))
+      : el('pre', { class: 'txt', text: '…' + u.snippet + '…' });
+    card.append(el('div', { class: 'card match' }, [top, body]));
+  });
+  return card;
+}
+
+// ================= ANALYTICS =================
+var AN = { data: null, charts: {}, vizChart: null };
+var PALETTE = ['#0f5f5c', '#d98e04', '#3a7bd5', '#b5446e', '#6a994e', '#7b6d8d', '#c75d2c', '#2a9d8f'];
+$$('[data-an]').forEach(function (b) { b.addEventListener('click', function () {
+  $$('[data-an]').forEach(function (x) { x.setAttribute('aria-selected', String(x === b)); });
+  $('#an-dash').hidden = b.dataset.an !== 'dash'; $('#an-viz').hidden = b.dataset.an !== 'viz';
+  if (b.dataset.an === 'viz') initViz();
+}); });
+function loadAnalytics() {
+  if (!$('#an-from').value) {
+    var t = new Date(), f = new Date(t.getFullYear(), t.getMonth() - 11, 1);
+    $('#an-from').value = iso(f).slice(0, 7); $('#an-to').value = iso(t).slice(0, 7);
+    var sel = $('#an-ou'); sel.replaceChildren(el('option', { value: '', text: 'All my org units' }));
+    S.ous.slice().sort(function (a, b) { return a.level - b.level; }).forEach(function (o) { sel.append(el('option', { value: o.code, text: ' '.repeat((o.level - 1) * 2) + o.name })); });
+  }
+  if (!window.Chart) { $('#an-note').textContent = 'The chart library did not load; check the connection and reload.'; }
+  $('#an-note').textContent = 'Loading…';
+  api('analyticsData', S.token, { ou: $('#an-ou').value }).then(function (d) {
+    AN.data = d; $('#an-note').textContent = 'Data as of ' + d.generated.replace('T', ' ').slice(0, 16) + '. Women are counted once per pregnancy; no names leave the server.';
+    drawDashboard();
+    if (!$('#an-viz').hidden) drawViz();
+  }).catch(function (e) { $('#an-note').textContent = e.message; });
+}
+$('#an-go').addEventListener('click', loadAnalytics);
+function months() {
+  var a = $('#an-from').value, b = $('#an-to').value, out = [];
+  if (!a || !b || a > b) return out;
+  var d = new Date(a + '-01T00:00:00'); while (iso(d).slice(0, 7) <= b) { out.push(iso(d).slice(0, 7)); d.setMonth(d.getMonth() + 1); }
+  return out;
+}
+function inRange(date) { var m = String(date || '').slice(0, 7); return m >= $('#an-from').value && m <= $('#an-to').value; }
+function pct(a, b) { return b ? Math.round(a / b * 1000) / 10 : null; }
+function fmtPct(v) { return v === null || v === undefined ? '—' : v.toFixed(1) + '%'; }
+function monthLabel(m) { var d = new Date(m + '-01T00:00:00'); return d.toLocaleString('en', { month: 'short' }) + ' ' + String(d.getFullYear()).slice(2); }
+function card(id, title, sub, tall) {
+  var c = el('div', { class: 'chart-card', id: 'cc-' + id }, [el('div', { class: 'bar', style: 'margin:0' }, [el('h3', { class: 'grow', text: title }),
+    el('button', { class: 'btn sm ghost', text: 'PNG', onclick: function () { var ch = AN.charts[id]; if (ch) downloadDataUrl(title + '.png', ch.toBase64Image('image/png', 1)); } })]),
+    el('div', { class: 'sub', text: sub }), el('div', { class: 'chart-box' + (tall ? ' tall' : '') }, [el('canvas', { id: 'cv-' + id })])]);
+  return c;
+}
+function downloadDataUrl(name, url) { var a = el('a', { href: url, download: name }); document.body.append(a); a.click(); a.remove(); }
+function chart(id, cfg) {
+  if (!window.Chart) return;
+  if (AN.charts[id]) AN.charts[id].destroy();
+  cfg.options = Object.assign({ responsive: true, maintainAspectRatio: false, animation: { duration: 300 }, plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } } }, cfg.options || {});
+  AN.charts[id] = new Chart(document.getElementById('cv-' + id), cfg);
+}
+function countBy(rows, fn) { var m = {}; rows.forEach(function (r) { var k = fn(r); if (k === null || k === undefined || k === '') return; m[k] = (m[k] || 0) + 1; }); return m; }
+function label(os, code) { var o = (META.optionSets[os] || []).filter(function (x) { return x[0] === code; })[0]; return o ? o[1] : code; }
+function drawDashboard() {
+  var D = AN.data, E = D.events, M = months();
+  var anc1 = E.ANC1.filter(function (e) { return inRange(e.event_date); });
+  var fu = E.ANCFU.filter(function (e) { return inRange(e.event_date); });
+  var del = E.DEL.filter(function (e) { return inRange(e.event_date); });
+  var pnc = E.PNC.filter(function (e) { return inRange(e.event_date); });
+  var ancAll = E.ANC1.concat(E.ANCFU), byEnr = {};
+  ancAll.forEach(function (e) { byEnr[e.enrollment_id] = (byEnr[e.enrollment_id] || 0) + 1; });
+  var pncW = {}; E.PNC.forEach(function (e) { (pncW[e.enrollment_id] = pncW[e.enrollment_id] || {})[e.MCC_PNC_WINDOW] = true; });
+  var delBy = {}; E.DEL.forEach(function (e) { delBy[e.enrollment_id] = e; });
+  var early = anc1.filter(function (e) { return e.MCC_GA_WK !== undefined && Number(e.MCC_GA_WK) < 12; }).length;
+  var fac = del.filter(function (e) { return e.MCC_DEL_PLACE === 'THIS_FACILITY' || e.MCC_DEL_PLACE === 'OTHER_FACILITY'; }).length;
+  var sba = del.filter(function (e) { return String(e.MCC_SBA) === 'true'; }).length;
+  var cs = del.filter(function (e) { return /^CS_/.test(e.MCC_DEL_MODE || ''); }).length;
+  var p48 = del.filter(function (e) { return pncW[e.enrollment_id] && pncW[e.enrollment_id].W48H; }).length;
+  var births = { LIVE: 0, FSB: 0, MSB: 0 }, lbw = 0, bf1 = 0;
+  del.forEach(function (e) { [1, 2, 3].forEach(function (b) { var o = e['MCC_B' + b + '_OUTCOME']; if (o) births[o] = (births[o] || 0) + 1; if (o === 'LIVE' && String(e['MCC_B' + b + '_LBW']) === 'true') lbw++; if (o === 'LIVE' && String(e['MCC_B' + b + '_BF1H']) === 'true') bf1++; }); });
+  var hivT = anc1.filter(function (e) { return e.MCC_HIV_RESULT === 'POS' || e.MCC_HIV_RESULT === 'NEG'; }).length;
+  var risk = anc1.filter(function (e) { return String(e.MCC_HIGH_RISK) === 'true'; }).length;
+  var ipt3 = anc1.concat(fu).filter(function (e) { return Number(e.MCC_IPTP_DOSE_NO) >= 3; }).length;
+  var cohort = D.enrollments.filter(function (e) { return inRange(e.enrollment_date); });
+  var anc4 = cohort.filter(function (e) { return (byEnr[e.enrollment_id] || 0) >= 4; }).length;
+  var kpis = [['ANC 1 visits', anc1.length.toLocaleString(), ''], ['ANC 1 before 12 weeks', fmtPct(pct(early, anc1.length)), early + ' of ' + anc1.length],
+    ['4+ ANC contacts', fmtPct(pct(anc4, cohort.length)), anc4 + ' of ' + cohort.length + ' pregnancies enrolled'], ['Deliveries', del.length.toLocaleString(), fmtPct(pct(fac, del.length)) + ' in a facility'],
+    ['Skilled birth attendance', fmtPct(pct(sba, del.length)), 'C-section rate ' + fmtPct(pct(cs, del.length))], ['PNC within 48 h', fmtPct(pct(p48, del.length)), p48 + ' of ' + del.length + ' deliveries'],
+    ['HIV tested at ANC 1', fmtPct(pct(hivT, anc1.length)), ''], ['High-risk at booking', fmtPct(pct(risk, anc1.length)), risk + ' women'],
+    ['IPTp3+ doses', ipt3.toLocaleString(), ''], ['Stillbirths /1000 births', births.LIVE + births.FSB + births.MSB ? Math.round((births.FSB + births.MSB) / (births.LIVE + births.FSB + births.MSB) * 1000) : '—', births.FSB + ' fresh, ' + births.MSB + ' macerated'],
+    ['Low birth weight', fmtPct(pct(lbw, births.LIVE)), lbw + ' of ' + births.LIVE + ' live births'], ['Breastfed within 1 h', fmtPct(pct(bf1, births.LIVE)), '']];
+  $('#an-kpis').replaceChildren.apply($('#an-kpis'), kpis.map(function (k) { return el('div', { class: 'tile' }, [el('b', { text: String(k[1]) }), el('span', { text: k[0] }), el('span', { class: 'delta', text: k[2] })]); }));
+  var g = $('#an-charts'); Object.keys(AN.charts).forEach(function (k) { AN.charts[k].destroy(); }); AN.charts = {};
+  g.replaceChildren(card('vol', 'Service volume by month', 'Visits recorded in the period'), card('casc', 'Continuum of care', 'Pregnancies enrolled in the period: how many reached each step'),
+    card('early', 'Early ANC booking', '% of ANC 1 visits before 12 weeks, by month'), card('iptp', 'IPTp-SP doses by month', 'Doses given at ANC contacts'),
+    card('anaemia', 'Anaemia at booking', 'Hb grade at ANC 1'), card('risk', 'High-risk reasons', 'Reasons recorded at ANC contacts in the period'),
+    card('screen', 'Screening at ANC 1', '% of ANC 1 visits with a result recorded'), card('age', 'Age of women at booking', 'Pregnancies enrolled in the period'),
+    card('mode', 'Mode of delivery', 'Deliveries in the period'), card('births', 'Birth outcomes', 'Babies born in the period'));
+  var perM = function (rows) { var c = countBy(rows, function (e) { return String(e.event_date).slice(0, 7); }); return M.map(function (m) { return c[m] || 0; }); };
+  var L = M.map(monthLabel);
+  chart('vol', { type: 'bar', data: { labels: L, datasets: [['ANC 1', anc1], ['ANC follow-up', fu], ['Deliveries', del], ['PNC', pnc]].map(function (x, i) { return { label: x[0], data: perM(x[1]), backgroundColor: PALETTE[i], borderRadius: 3 }; }) },
+    options: { scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } } });
+  var steps = [['Enrolled (ANC 1)', cohort.length], ['4+ ANC contacts', anc4],
+    ['Facility delivery', cohort.filter(function (e) { var d = delBy[e.enrollment_id]; return d && (d.MCC_DEL_PLACE === 'THIS_FACILITY' || d.MCC_DEL_PLACE === 'OTHER_FACILITY'); }).length],
+    ['PNC within 48 h', cohort.filter(function (e) { return pncW[e.enrollment_id] && pncW[e.enrollment_id].W48H; }).length],
+    ['PNC at 6 weeks', cohort.filter(function (e) { return pncW[e.enrollment_id] && pncW[e.enrollment_id].W6; }).length]];
+  chart('casc', { type: 'bar', data: { labels: steps.map(function (s) { return s[0] + ' (' + (fmtPct(pct(s[1], steps[0][1]))) + ')'; }), datasets: [{ label: 'Pregnancies', data: steps.map(function (s) { return s[1]; }), backgroundColor: steps.map(function (_, i) { return i ? '#7fb3b0' : PALETTE[0]; }), borderRadius: 3 }] },
+    options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } } } } });
+  chart('early', { type: 'line', data: { labels: L, datasets: [{ label: '% before 12 weeks', data: M.map(function (m) { var r = anc1.filter(function (e) { return String(e.event_date).slice(0, 7) === m; }); return pct(r.filter(function (e) { return Number(e.MCC_GA_WK) < 12; }).length, r.length); }), borderColor: PALETTE[0], backgroundColor: PALETTE[0], spanGaps: true, tension: 0 }] },
+    options: { scales: { y: { beginAtZero: true, max: 100, ticks: { callback: function (v) { return v + '%'; } } } }, plugins: { legend: { display: false } } } });
+  var ancM = anc1.concat(fu);
+  chart('iptp', { type: 'bar', data: { labels: L, datasets: [['IPTp1', function (n) { return n === 1; }], ['IPTp2', function (n) { return n === 2; }], ['IPTp3+', function (n) { return n >= 3; }]].map(function (x, i) {
+    return { label: x[0], data: M.map(function (m) { return ancM.filter(function (e) { return String(e.event_date).slice(0, 7) === m && x[1](Number(e.MCC_IPTP_DOSE_NO)); }).length; }), backgroundColor: PALETTE[i], borderRadius: 3 }; }) },
+    options: { scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } } } } });
+  var an = countBy(anc1, function (e) { return e.MCC_ANAEMIA_GRADE; }), ag = ['NONE', 'MILD', 'MODERATE', 'SEVERE'];
+  chart('anaemia', { type: 'doughnut', data: { labels: ag.map(function (k) { return label('MCC_ANAEMIA_GRADE', k); }), datasets: [{ data: ag.map(function (k) { return an[k] || 0; }), backgroundColor: ['#6a994e', '#e9c46a', '#d98e04', '#b3261e'] }] } });
+  var rr = {}; ancM.forEach(function (e) { String(e.MCC_RISK_REASONS || '').split(';').map(function (x) { return x.trim(); }).filter(Boolean).forEach(function (x) { rr[x] = (rr[x] || 0) + 1; }); });
+  var rk = Object.keys(rr).sort(function (a, b) { return rr[b] - rr[a]; }).slice(0, 10);
+  chart('risk', { type: 'bar', data: { labels: rk, datasets: [{ label: 'Contacts', data: rk.map(function (k) { return rr[k]; }), backgroundColor: '#b5446e', borderRadius: 3 }] }, options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } } } } });
+  var sc = [['Syphilis', function (e) { return /REACTIVE/.test(e.MCC_SYPH_RESULT || ''); }], ['HIV', function (e) { return e.MCC_HIV_RESULT === 'POS' || e.MCC_HIV_RESULT === 'NEG' || e.MCC_HIV_RESULT === 'KNOWN_POS'; }],
+    ['Hepatitis B', function (e) { return e.MCC_HBSAG_RESULT === 'POS' || e.MCC_HBSAG_RESULT === 'NEG'; }], ['Haemoglobin', function (e) { return e.MCC_HB_STATUS === 'DONE'; }], ['TB symptoms', function (e) { return e.MCC_TB_SCREEN && e.MCC_TB_SCREEN !== 'ND'; }]];
+  chart('screen', { type: 'bar', data: { labels: sc.map(function (x) { return x[0]; }), datasets: [{ label: '% screened', data: sc.map(function (x) { return pct(anc1.filter(x[1]).length, anc1.length); }), backgroundColor: PALETTE[2], borderRadius: 3 }] },
+    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, max: 100, ticks: { callback: function (v) { return v + '%'; } } } } } });
+  var ab = countBy(cohort, function (e) { return e.age_band; }), bands = ['10–14', '15–19', '20–24', '25–49', '50+', 'Unknown'].filter(function (b) { return ab[b]; });
+  chart('age', { type: 'bar', data: { labels: bands, datasets: [{ label: 'Pregnancies', data: bands.map(function (b) { return ab[b]; }), backgroundColor: bands.map(function (b) { return b === '10–14' || b === '15–19' ? '#d98e04' : PALETTE[0]; }), borderRadius: 3 }] },
+    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } } });
+  var md = countBy(del, function (e) { return e.MCC_DEL_MODE; }), mk = Object.keys(md);
+  chart('mode', { type: 'bar', data: { labels: mk.map(function (k) { return label('MCC_DEL_MODE', k); }), datasets: [{ label: 'Deliveries', data: mk.map(function (k) { return md[k]; }), backgroundColor: PALETTE[3], borderRadius: 3 }] }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } } });
+  chart('births', { type: 'doughnut', data: { labels: ['Live births', 'Fresh stillbirths', 'Macerated stillbirths'], datasets: [{ data: [births.LIVE, births.FSB, births.MSB], backgroundColor: ['#6a994e', '#c75d2c', '#7b6d8d'] }] } });
+  // facility table
+  var ous = {}; D.orgUnits.forEach(function (o) { ous[o.code] = o.name; });
+  var codes = {}; anc1.concat(del).forEach(function (e) { codes[e.org_unit] = true; });
+  AN.fac = [['Facility', 'ANC 1', '% before 12 wks', 'High-risk %', 'Deliveries', '% facility', '% SBA', '% PNC 48 h']];
+  Object.keys(codes).sort().forEach(function (c) {
+    var a = anc1.filter(function (e) { return e.org_unit === c; }), d = del.filter(function (e) { return e.org_unit === c; });
+    AN.fac.push([ous[c] || c, a.length, fmtPct(pct(a.filter(function (e) { return Number(e.MCC_GA_WK) < 12; }).length, a.length)), fmtPct(pct(a.filter(function (e) { return String(e.MCC_HIGH_RISK) === 'true'; }).length, a.length)),
+      d.length, fmtPct(pct(d.filter(function (e) { return /FACILITY/.test(e.MCC_DEL_PLACE || ''); }).length, d.length)), fmtPct(pct(d.filter(function (e) { return String(e.MCC_SBA) === 'true'; }).length, d.length)),
+      fmtPct(pct(d.filter(function (e) { return pncW[e.enrollment_id] && pncW[e.enrollment_id].W48H; }).length, d.length))]);
+  });
+  $('#an-fac').replaceChildren(AN.fac.length > 1 ? tableOf(AN.fac) : el('p', { class: 'muted small', text: 'No ANC 1 or delivery data in this period.' }));
+}
+function tableOf(rows) {
+  var tb = el('tbody'); rows.slice(1).forEach(function (r) { tb.append(el('tr', null, r.map(function (c) { return el('td', { text: c }); }))); });
+  return el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, rows[0].map(function (h) { return el('th', { text: h }); }))]), tb])]);
+}
+$('#an-fac-csv').addEventListener('click', function () { if (AN.fac) downloadText('facility_comparison.csv', AN.fac.map(csvRow).join('\r\n'), 'text/csv'); });
+
+// ---------- visualizer ----------
+var VZ_INIT = false;
+function stageFields(code) { var st = META.stages.filter(function (s) { return s.code === code; })[0], f = []; st.sections.forEach(function (s) { f = f.concat(s.fields); }); return f; }
+function initViz() {
+  if (!VZ_INIT) {
+    VZ_INIT = true;
+    var s = $('#vz-stage'); META.stages.forEach(function (st) { s.append(el('option', { value: st.code, text: st.name })); });
+    s.addEventListener('change', function () { fillVizFields(); drawViz(); });
+    ['#vz-measure', '#vz-dim', '#vz-series', '#vz-type', '#vz-fval'].forEach(function (id) { $(id).addEventListener('change', drawViz); });
+    $('#vz-ffield').addEventListener('change', function () { fillFilterValues(); drawViz(); });
+    $('#vz-png').addEventListener('click', function () { if (AN.vizChart) downloadDataUrl(($('#vz-title').textContent || 'chart') + '.png', AN.vizChart.toBase64Image('image/png', 1)); });
+    $('#vz-csv').addEventListener('click', function () { if (AN.vizRows) downloadText('visualizer.csv', AN.vizRows.map(csvRow).join('\r\n'), 'text/csv'); });
+    $('#vz-save').addEventListener('click', function () {
+      var name = window.prompt('Name for this view:', $('#vz-title').textContent); if (!name) return;
+      var all = savedViews(); all.push({ name: name, cfg: vizCfg() }); try { localStorage.setItem('mcc_views', JSON.stringify(all)); } catch (e) {} renderSaved();
+    });
+    fillVizFields(); renderSaved();
+  }
+  if (!AN.data) loadAnalytics(); else drawViz();
+}
+function fillVizFields() {
+  var f = stageFields($('#vz-stage').value);
+  var cats = f.filter(function (c) { var m = META.fields[c]; return m.os || m.vt === 'BOOLEAN' || m.vt === 'TRUE_ONLY'; });
+  var nums = f.filter(function (c) { return /NUMBER|INTEGER/.test(META.fields[c].vt); });
+  var opt = function (v, t) { return el('option', { value: v, text: t }); };
+  $('#vz-measure').replaceChildren.apply($('#vz-measure'), [opt('count', 'Number of events'), opt('women', 'Number of women (pregnancies)')].concat(nums.map(function (c) { return opt('avg:' + c, 'Average ' + META.fields[c].name); })).concat(nums.map(function (c) { return opt('sum:' + c, 'Total ' + META.fields[c].name); })));
+  var dims = [opt('month', 'Month'), opt('org_unit', 'Org unit'), opt('age_band', 'Age band'), opt('hiv_status', 'HIV test result (any visit)')].concat(cats.map(function (c) { return opt('f:' + c, META.fields[c].name); }));
+  $('#vz-dim').replaceChildren.apply($('#vz-dim'), dims.map(function (o) { return o.cloneNode(true); }));
+  $('#vz-series').replaceChildren.apply($('#vz-series'), [opt('', 'None')].concat(dims.map(function (o) { return o.cloneNode(true); })));
+  $('#vz-ffield').replaceChildren.apply($('#vz-ffield'), [opt('', 'No filter')].concat(cats.map(function (c) { return opt(c, META.fields[c].name); })));
+  fillFilterValues();
+}
+function fillFilterValues() {
+  var c = $('#vz-ffield').value, s = $('#vz-fval'); s.replaceChildren(el('option', { value: '', text: c ? 'Any value' : '—' }));
+  if (!c) return;
+  var m = META.fields[c], opts = m.os ? META.optionSets[m.os] : [['true', 'Yes'], ['false', 'No']];
+  opts.forEach(function (o) { s.append(el('option', { value: o[0], text: o[1] })); });
+}
+function vizCfg() { return { stage: $('#vz-stage').value, measure: $('#vz-measure').value, dim: $('#vz-dim').value, series: $('#vz-series').value, ffield: $('#vz-ffield').value, fval: $('#vz-fval').value, type: $('#vz-type').value }; }
+function savedViews() {
+  var base = [
+    { name: 'ANC 1 visits by facility', cfg: { stage: 'ANC1', measure: 'count', dim: 'org_unit', series: '', ffield: '', fval: '', type: 'hbar' } },
+    { name: 'Booking trimester by month', cfg: { stage: 'ANC1', measure: 'count', dim: 'month', series: 'f:MCC_BOOK_TRIMESTER', ffield: '', fval: '', type: 'stacked' } },
+    { name: 'Average Hb at booking by facility', cfg: { stage: 'ANC1', measure: 'avg:MCC_HB', dim: 'org_unit', series: '', ffield: '', fval: '', type: 'bar' } },
+    { name: 'Supplement given at ANC', cfg: { stage: 'ANCFU', measure: 'count', dim: 'f:MCC_SUPP_PRODUCT', series: '', ffield: '', fval: '', type: 'pie' } },
+    { name: 'Danger signs at ANC follow-up', cfg: { stage: 'ANCFU', measure: 'count', dim: 'f:MCC_DANGER_ANC', series: '', ffield: '', fval: '', type: 'hbar' } },
+    { name: 'Postpartum FP method mix', cfg: { stage: 'PNC', measure: 'count', dim: 'f:MCC_FP_METHOD', series: '', ffield: '', fval: '', type: 'hbar' } },
+    { name: 'Deliveries by place and month', cfg: { stage: 'DEL', measure: 'count', dim: 'month', series: 'f:MCC_DEL_PLACE', ffield: '', fval: '', type: 'stacked' } },
+    { name: 'Home visit outcomes', cfg: { stage: 'REF', measure: 'count', dim: 'f:MCC_HV_OUTCOME', series: '', ffield: 'MCC_FU_TYPE', fval: 'HOME_VISIT', type: 'hbar' } },
+  ];
+  var mine = []; try { mine = JSON.parse(localStorage.getItem('mcc_views') || '[]'); } catch (e) {}
+  return base.map(function (v) { v.builtin = true; return v; }).concat(mine);
+}
+function renderSaved() {
+  var box = $('#vz-saved'); box.replaceChildren();
+  savedViews().forEach(function (v) {
+    box.append(el('button', { class: 'btn' + (v.builtin ? '' : ' primary'), text: v.name, onclick: function () { applyView(v.cfg); } }));
+  });
+}
+function applyView(c) {
+  $('#vz-stage').value = c.stage; fillVizFields();
+  ['measure', 'dim', 'series', 'ffield', 'type'].forEach(function (k) { $('#vz-' + k).value = c[k]; });
+  fillFilterValues(); $('#vz-fval').value = c.fval || ''; drawViz();
+}
+function drawViz() {
+  if (!AN.data || $('#an-viz').hidden) return;
+  var c = vizCfg(), E = AN.data.events[c.stage] || [], enr = {}; AN.data.enrollments.forEach(function (e) { enr[e.enrollment_id] = e; });
+  var ous = {}; AN.data.orgUnits.forEach(function (o) { ous[o.code] = o.name; });
+  var rows = E.filter(function (e) { return inRange(e.event_date); });
+  if (c.ffield && c.fval) rows = rows.filter(function (e) { return String(e[c.ffield] || '').split(',').indexOf(c.fval) >= 0; });
+  var keyOf = function (dim, e) {
+    if (!dim) return ['All'];
+    if (dim === 'month') return [String(e.event_date).slice(0, 7)];
+    if (dim === 'org_unit') return [ous[e.org_unit] || e.org_unit];
+    if (dim === 'age_band' || dim === 'hiv_status') { var x = enr[e.enrollment_id]; return [x ? (x[dim] || 'Unknown') : 'Unknown']; }
+    var f = dim.slice(2), m = META.fields[f], v = String(e[f] === undefined ? '' : e[f]);
+    if (!v) return ['(blank)'];
+    return v.split(',').map(function (x) { return m.os ? label(m.os, x) : (x === 'true' ? 'Yes' : x === 'false' ? 'No' : x); });
+  };
+  var cats = [], sers = [], cell = {};
+  rows.forEach(function (e) {
+    keyOf(c.dim, e).forEach(function (k) { keyOf(c.series, e).forEach(function (s) {
+      if (cats.indexOf(k) < 0) cats.push(k); if (sers.indexOf(s) < 0) sers.push(s);
+      var id = k + '\u0001' + s, z = cell[id] = cell[id] || { n: 0, sum: 0, cnt: 0, w: {} };
+      z.n++; z.w[e.enrollment_id] = true;
+      if (c.measure.indexOf(':') > 0) { var v = Number(e[c.measure.split(':')[1]]); if (!isNaN(v) && e[c.measure.split(':')[1]] !== undefined) { z.sum += v; z.cnt++; } }
+    }); });
+  });
+  if (c.dim === 'month') { cats = months().filter(function (m) { return true; }); }
+  else cats.sort(function (a, b) { return tot(b) - tot(a); });
+  function val(k, s) { var z = cell[k + '\u0001' + s]; if (!z) return c.measure === 'count' || c.measure === 'women' || /^sum/.test(c.measure) ? 0 : null;
+    return c.measure === 'count' ? z.n : c.measure === 'women' ? Object.keys(z.w).length : /^avg/.test(c.measure) ? (z.cnt ? Math.round(z.sum / z.cnt * 10) / 10 : null) : z.sum; }
+  function tot(k) { return sers.reduce(function (a, s) { return a + (val(k, s) || 0); }, 0); }
+  var mName = $('#vz-measure').selectedOptions[0].textContent, dName = $('#vz-dim').selectedOptions[0].textContent;
+  $('#vz-title').textContent = mName + ' by ' + dName.toLowerCase() + (c.series ? ' and ' + $('#vz-series').selectedOptions[0].textContent.toLowerCase() : '') + (c.ffield && c.fval ? ' (' + $('#vz-fval').selectedOptions[0].textContent + ')' : '');
+  var labels = cats.map(function (k) { return c.dim === 'month' ? monthLabel(k) : k; });
+  AN.vizRows = [[dName].concat(sers)].concat(cats.map(function (k, i) { return [labels[i]].concat(sers.map(function (s) { var v = val(k, s); return v === null ? '' : v; })); }));
+  $('#vz-table').replaceChildren(rows.length ? tableOf(AN.vizRows) : el('p', { class: 'muted small', text: 'No records match in this period.' }));
+  if (AN.vizChart) { AN.vizChart.destroy(); AN.vizChart = null; }
+  var box = $('#vz-canvas').parentElement; box.hidden = c.type === 'table' || !rows.length;
+  if (box.hidden || !window.Chart) return;
+  var pie = c.type === 'pie';
+  AN.vizChart = new Chart($('#vz-canvas'), {
+    type: pie ? 'pie' : c.type === 'line' ? 'line' : 'bar',
+    data: { labels: labels, datasets: (pie ? [sers[0]] : sers).map(function (s, i) { return { label: s, data: cats.map(function (k) { return val(k, s); }),
+      backgroundColor: pie ? cats.map(function (_, j) { return PALETTE[j % PALETTE.length]; }) : PALETTE[i % PALETTE.length], borderColor: PALETTE[i % PALETTE.length], borderRadius: pie ? 0 : 3, tension: 0, spanGaps: true }; }) },
+    options: { responsive: true, maintainAspectRatio: false, indexAxis: c.type === 'hbar' ? 'y' : 'x', plugins: { legend: { display: pie || sers.length > 1, position: 'bottom' } },
+      scales: pie ? {} : { x: { stacked: c.type === 'stacked', beginAtZero: true }, y: { stacked: c.type === 'stacked', beginAtZero: true } } },
+  });
+}
 
 // ================= START =================
 api('orgUnits').then(function (ous) { S.allOus = ous; }).catch(function () {}).then(function () {
