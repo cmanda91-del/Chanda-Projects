@@ -82,14 +82,14 @@ function enterApp() {
   $$('[data-need]').forEach(function (x) { x.hidden = !can(x.dataset.need); });
   api('myOrgUnits', S.token).then(function (ous) {
     S.ous = ous;
-    [$('#cap-ou'), $('#up-ou')].forEach(function (s) { fillOuSelect(s, ous, false); if (S.user.org_unit && ous.some(function (o) { return o.code === S.user.org_unit; })) s.value = S.user.org_unit; });
+    [$('#cap-ou'), $('#up-ou')].forEach(function (s) { fillOuSelect(s, ous, false); if (S.user.org_unit && ous.some(function (o) { return o.code === S.user.org_unit; })) setOu(s, S.user.org_unit); });
     show('home');
   });
 }
 /** Facility pickers: grouped by district/programme (OHNEZ – Lumezi, IMNCHN – Mongu). facilitiesOnly hides provinces and districts. */
 function fillOuSelect(sel, ous, placeholder, facilitiesOnly) {
   sel.replaceChildren();
-  if (placeholder) sel.append(el('option', { value: '', text: 'Select…' }));
+  if (placeholder) sel.append(el('option', { value: '', text: typeof placeholder === 'string' ? placeholder : 'Select…' }));
   var all = S.allOus && S.allOus.length ? S.allOus : ous, nameOf = {}; all.forEach(function (o) { nameOf[o.code] = o; });
   var higher = ous.filter(function (o) { return o.level < 4; }).sort(function (a, b) { return a.level - b.level || String(a.name).localeCompare(b.name); });
   if (!facilitiesOnly) higher.forEach(function (o) { sel.append(el('option', { value: o.code, text: '\u00a0'.repeat((o.level - 1) * 2) + o.name })); });
@@ -100,6 +100,77 @@ function fillOuSelect(sel, ous, placeholder, facilitiesOnly) {
     groups[pc].sort(function (a, b) { return String(a.name).localeCompare(b.name); }).forEach(function (o) { g.append(el('option', { value: o.code, text: o.name })); });
     sel.append(g);
   });
+  ouTree(sel, ous, { facilitiesOnly: !!facilitiesOnly, placeholder: typeof placeholder === 'string' ? placeholder : (facilitiesOnly ? 'Select facility…' : 'Select org unit…') });
+}
+/** Set an org-unit picker's value and keep its tree label in step. */
+function setOu(sel, v) { sel.value = v || ''; if (sel._tree) sel._tree.refresh(); }
+/** DHIS2-style org unit tree (Province › District › Facility). Branches open with +; the list stays closed until clicked. Drives a hidden <select>. */
+function ouTree(sel, ous, o) {
+  var all = S.allOus && S.allOus.length ? S.allOus : ous, byCode = {};
+  all.forEach(function (u) { byCode[u.code] = u; });
+  var inScope = {}; ous.forEach(function (u) { inScope[u.code] = true; var p = byCode[u.parent_code]; while (p) { inScope[p.code] = inScope[p.code] || 'ancestor'; p = byCode[p.parent_code]; } });
+  var nodes = all.filter(function (u) { return inScope[u.code]; });
+  var kids = {}; nodes.forEach(function (u) { (kids[u.parent_code] = kids[u.parent_code] || []).push(u); });
+  Object.keys(kids).forEach(function (k) { kids[k].sort(function (a, b) { return String(a.name).localeCompare(b.name); }); });
+  var roots = nodes.filter(function (u) { return !inScope[u.parent_code]; });
+  var t = sel._tree;
+  if (!t) {
+    t = sel._tree = { wrap: el('div', { class: 'outree' }) };
+    t.btn = el('button', { type: 'button', class: 'outree-btn', 'aria-haspopup': 'tree' });
+    t.panel = el('div', { class: 'outree-panel', role: 'tree', hidden: true });
+    t.wrap.append(t.btn, t.panel);
+    t.btn.addEventListener('click', function () { t.panel.hidden = !t.panel.hidden; if (!t.panel.hidden) t.render(); });
+    document.addEventListener('click', function (e) { if (!t.wrap.contains(e.target)) t.panel.hidden = true; });
+    sel.addEventListener('change', function () { t.refresh(); });
+    sel.hidden = true;
+    var attach = function () {
+      if (!sel.parentNode || t.wrap.parentNode) return;
+      var lab = sel.parentNode;
+      if (lab.tagName === 'LABEL') { // a <label> would forward every click inside the tree to its first button and close the list
+        var d = document.createElement('div'); d.className = lab.className + ' ou-label';
+        for (var i = 0; i < lab.attributes.length; i++) if (lab.attributes[i].name !== 'class' && lab.attributes[i].name !== 'for') d.setAttribute(lab.attributes[i].name, lab.attributes[i].value);
+        while (lab.firstChild) d.append(lab.firstChild);
+        lab.replaceWith(d);
+      }
+      sel.parentNode.insertBefore(t.wrap, sel.nextSibling);
+    };
+    attach(); if (!t.wrap.parentNode) setTimeout(attach, 0);
+    t.open = {};
+  }
+  t.opts = o;
+  t.path = function (code) { var out = [], u = byCode[code]; while (u) { out.unshift(u.name); u = byCode[u.parent_code]; } return out; };
+  t.refresh = function () {
+    var v = sel.value, path = v ? t.path(v) : [];
+    t.btn.replaceChildren(el('span', { class: 'outree-val' + (v ? '' : ' muted'), text: v ? path.slice(-1)[0] : (o.placeholder || 'Select…') }),
+      v && path.length > 1 ? el('span', { class: 'outree-path', text: path.slice(0, -1).join(' › ') }) : null, el('span', { class: 'outree-caret', text: '▾' }));
+  };
+  t.render = function () {
+    var ul = function (list, depth) {
+      var u = el('ul', { role: depth ? 'group' : null });
+      list.forEach(function (n) {
+        var ch = kids[n.code] || [], canPick = (!o.facilitiesOnly || n.level >= 4) && inScope[n.code] === true;
+        var li = el('li', { role: 'treeitem', 'aria-expanded': ch.length ? String(!!t.open[n.code]) : null });
+        var tog = ch.length ? el('button', { type: 'button', class: 'outree-tog', 'aria-label': (t.open[n.code] ? 'Collapse ' : 'Expand ') + n.name, text: t.open[n.code] ? '−' : '+',
+          onclick: function (e) { e.stopPropagation(); t.open[n.code] = !t.open[n.code]; t.render(); } }) : el('span', { class: 'outree-tog empty' });
+        var name = el('button', { type: 'button', class: 'outree-name' + (sel.value === n.code ? ' sel' : '') + (canPick ? '' : ' nopick'), text: n.name,
+          onclick: function (e) {
+            e.stopPropagation();
+            if (!canPick) { if (ch.length) { t.open[n.code] = !t.open[n.code]; t.render(); } return; }
+            sel.value = n.code; sel.dispatchEvent(new Event('change', { bubbles: true })); t.panel.hidden = true; t.refresh();
+          } });
+        li.append(el('div', { class: 'outree-row' }, [tog, name, n.level >= 4 ? null : el('span', { class: 'outree-lvl', text: ['', 'Country', 'Province', 'District'][n.level] || '' })]));
+        if (ch.length && t.open[n.code]) li.append(ul(ch, depth + 1));
+        u.append(li);
+      });
+      return u;
+    };
+    t.panel.replaceChildren();
+    if ([].some.call(sel.options, function (op) { return op.value === ''; }) && o.placeholder && !/^Select/.test(o.placeholder))
+      t.panel.append(el('button', { type: 'button', class: 'outree-name' + (sel.value ? '' : ' sel'), style: 'margin:2px 0 6px 22px', text: o.placeholder,
+        onclick: function (e) { e.stopPropagation(); sel.value = ''; sel.dispatchEvent(new Event('change', { bubbles: true })); t.panel.hidden = true; t.refresh(); } }));
+    t.panel.append(ul(roots, 0));
+  };
+  t.refresh();
 }
 
 // ================= NAV =================
@@ -134,7 +205,20 @@ $('#cap-search').addEventListener('click', doSearch);
 $('#cap-q').addEventListener('keydown', function (e) { if (e.key === 'Enter') doSearch(); });
 function doSearch() {
   $('#cap-person').replaceChildren();
-  var out = $('#cap-results'); out.replaceChildren(el('p', { class: 'muted', text: 'Searching…' }));
+  var out = $('#cap-results'), anc = $('#cap-anc').value, age = $('#cap-age').value;
+  if (anc && age) {
+    out.replaceChildren(el('p', { class: 'muted', text: 'Searching…' }));
+    var fac = $('#cap-ou').value, f = S.ous.filter(function (o) { return o.code === fac; })[0];
+    if (!f || f.level < 4) { out.replaceChildren(el('div', { class: 'info', text: 'Choose the facility (use + to open the province and district), then search by date of 1st ANC and age.' })); return; }
+    api('lookupClient', S.token, { facility: fac, age: Number(age), first_anc: anc }).then(function (hits) {
+      hits = hits.filter(function (h) { return h.match === 'Facility, age and first ANC'; });
+      if (!hits.length) { out.replaceChildren(el('div', { class: 'info', text: 'No woman of age ' + age + ' with a first ANC on ' + anc + ' at ' + f.name + '. Check the date and age, or register her.' })); return; }
+      out.replaceChildren.apply(out, [el('div', { class: hits.length > 1 ? 'risk' : 'info', text: hits.length > 1 ? hits.length + ' women match – possible duplicates. Check the names and ANC numbers.' : '1 match.' })].concat(hits.map(function (h) { return clientCard(h, true); })));
+    }).catch(function (e) { out.replaceChildren(el('div', { class: 'msg', text: e.message })); });
+    return;
+  }
+  if (anc && !$('#cap-q').value) $('#cap-q').value = anc;
+  out.replaceChildren(el('p', { class: 'muted', text: 'Searching…' }));
   api('searchPersons', S.token, $('#cap-q').value).then(function (rows) {
     if (!rows.length) { out.replaceChildren(el('div', { class: 'info', text: 'No match. Check spelling, try the phone number or UMID, then register her if she is new.' })); return; }
     var tb = el('tbody');
@@ -157,6 +241,13 @@ function openPerson(teiId, keepEnrollment) {
     S.enrollment = (keepEnrollment && d.enrollments.filter(function (e) { return e.enrollment_id === keepEnrollment; })[0]) || active || d.enrollments[d.enrollments.length - 1] || null;
     renderPerson();
   }).catch(function (e) { box.replaceChildren(el('div', { class: 'msg', text: e.message })); });
+}
+function abbrOf(c) { var o = (S.allOus || []).filter(function (x) { return x.code === c; })[0]; return o ? o.abbr || '??' : '??'; }
+function previewUid(v) {
+  var fc = $('#f-ou') ? $('#f-ou').value : '', f = (S.allOus || []).filter(function (x) { return x.code === fc; })[0];
+  if (!f) return 'choose the facility first';
+  var m = String(v.MCC_ANC_REG_NO || '').match(/\d+/);
+  return abbrOf(f.parent_code) + abbrOf(fc) + (m ? ('000' + Number(m[0])).slice(-4) : '#### (next free ANC number)');
 }
 function ouName(c) { var o = (S.allOus || []).filter(function (x) { return x.code === c; })[0]; return o ? o.name : c; }
 function stageName(c) { return (META.stages.filter(function (s) { return s.code === c; })[0] || {}).name || c; }
@@ -190,6 +281,7 @@ function renderPerson() {
       } })])]), msg);
   }
   box.replaceChildren(head, enrCard);
+  if (p.MCC_DUP_FLAG) box.prepend(el('div', { class: 'risk', text: '⚠ ' + p.MCC_DUP_FLAG + '. An administrator should confirm or merge these records.' }));
   if (S.newUmid === p.umid) { box.prepend(el('div', { class: 'info big', text: 'Registered. Unique ID: ' + p.umid + ' — write it on her ANC card. Next: enroll the pregnancy below, then open ANC 1.' })); S.newUmid = null; }
   if (!S.enrollment) { box.append(uploadsCard(d.uploads)); return; }
   var en = S.enrollment, evs = d.events.filter(function (e) { return e.enrollment_id === en.enrollment_id; })
@@ -255,7 +347,7 @@ function inputFor(code, value, onChange) {
     node = el('div', { class: 'checks' }, [el('label', null, [cb, 'Yes'])]);
     read = function () { return cb.checked ? 'true' : ''; };
   } else if (vt === 'ORGANISATION_UNIT') {
-    node = el('select', { onchange: fire }); fillOuSelect(node, S.allOus, true); node.value = value || ''; read = function () { return node.value; };
+    node = el('select', { onchange: fire }); fillOuSelect(node, S.allOus, true, true); setOu(node, value || ''); read = function () { return node.value; };
   } else if (vt === 'AGE') {
     // Date of birth and age stay in step: typing either fills the other. Age is counted at the first ANC visit (today if not entered yet).
     var refDate = function () { return (S.form && S.form.values.MCC_FIRST_ANC_DATE) || today(); };
@@ -299,7 +391,7 @@ function openForm(opts) {
   if (reg) {
     var ou = el('select', { id: 'f-ou' }); fillOuSelect(ou, S.ous, true, true);
     var defOu = opts.org_unit || S.user.org_unit || '';
-    ou.value = S.ous.some(function (o) { return o.code === defOu && o.level >= 4; }) ? defOu : '';
+    setOu(ou, S.ous.some(function (o) { return o.code === defOu && o.level >= 4; }) ? defOu : '');
     head.append(el('label', { class: 'fld', 'data-code': 'org_unit' }, [el('span', null, ['Registering facility', el('span', { class: 'req', text: ' *' })]), ou]));
     if (!opts.tei_id) ou.addEventListener('change', function () { recompute(); scheduleLookup(); });
     if (opts.tei_id) head.append(el('label', null, ['UMID', el('input', { value: opts.values.umid, readonly: true })]));
@@ -307,7 +399,7 @@ function openForm(opts) {
     var date = el('input', { type: 'date', id: 'f-date', max: today(), value: ev ? String(ev.event_date).slice(0, 10) : today() });
     date.addEventListener('input', recompute);
     head.append(el('label', null, [st.code === 'DEL' ? 'Event date (delivery date)' : 'Visit date', date]));
-    var euo = el('select', { id: 'f-ou' }); fillOuSelect(euo, S.ous, false, true); euo.value = (ev && ev.org_unit) || $('#cap-ou').value || S.enrollment.org_unit;
+    var euo = el('select', { id: 'f-ou' }); fillOuSelect(euo, S.ous, false, true); setOu(euo, (ev && ev.org_unit) || $('#cap-ou').value || S.enrollment.org_unit);
     head.append(el('label', null, ['Org unit', euo]));
   }
   var form = $('#form-body'); form.replaceChildren();
@@ -355,7 +447,7 @@ function runLookup() {
     hits.forEach(function (h) { box.append(clientCard(h)); });
   }).catch(function (e) { box.replaceChildren(el('div', { class: 'msg', text: e.message })); });
 }
-function clientCard(h) {
+function clientCard(h, openOnly) {
   var a = h.active;
   return el('div', { class: 'card match' }, [
     el('div', { class: 'bar', style: 'margin:0' }, [el('b', { class: 'grow', text: h.name + ' · ' + h.umid }), el('span', { class: 'pill', text: 'Matched on ' + h.match })]),
@@ -363,8 +455,8 @@ function clientCard(h) {
       ['Pregnancy', a ? 'Active · EDD ' + a.edd : (h.pregnancies ? 'None active (' + h.pregnancies + ' before)' : 'Not enrolled')],
       ['Last visit', a && a.last ? a.last.stage + ', ' + a.last.date : '—']].map(function (x) { return el('div', null, [el('span', { text: x[0] }), x[1] || '—']); })),
     a && a.last && String(a.last.risk) === 'true' ? el('div', { class: 'risk', style: 'margin:8px 0 0', text: 'High risk: ' + a.last.reasons }) : null,
-    el('div', { class: 'bar' }, [el('button', { class: 'btn primary', type: 'button', text: 'Load and update details', onclick: function () { loadExisting(h.tei_id); } }),
-      el('button', { class: 'btn', type: 'button', text: 'Open record to add a visit', onclick: function () { openPerson(h.tei_id); } })])]);
+    el('div', { class: 'bar' }, [openOnly ? null : el('button', { class: 'btn primary', type: 'button', text: 'Load and update details', onclick: function () { loadExisting(h.tei_id); } }),
+      el('button', { class: 'btn' + (openOnly ? ' primary' : ''), type: 'button', text: openOnly ? 'Open record' : 'Open record to add a visit', onclick: function () { openPerson(h.tei_id); } })])]);
 }
 function loadExisting(teiId) {
   api('getPerson', S.token, teiId).then(function (d) {
@@ -459,7 +551,7 @@ function recompute() {
     if (has(v.MCC_DOB) && has(v.MCC_FIRST_ANC_DATE)) {
       var ag = yearsBetween(v.MCC_DOB, v.MCC_FIRST_ANC_DATE);
       if (ag < 10 || ag > 55) r.err.MCC_DOB = 'Age at first ANC must be 10–55 years (now ' + ag + ').';
-      else if (!F.opts.tei_id) r.info.push('Unique ID will be generated on save: ' + ($('#f-ou') ? $('#f-ou').value : '') + '-' + v.MCC_FIRST_ANC_DATE.slice(2).replace(/-/g, '') + '-' + ('0' + ag).slice(-2) + '-nn');
+      else if (!F.opts.tei_id) r.info.push('Unique ID on save: ' + previewUid(v));
     }
     if (has(v.MCC_DOB)) r.assign.MCC_ADOLESCENT = String(yearsBetween(v.MCC_DOB, today()) < 20);
     r.assign.MCC_SMS_PHONE = v.MCC_CONSENT_SMS === 'true' ? (v.MCC_PHONE || '') : '';
@@ -656,8 +748,8 @@ function saveForm(complete) {
   var btns = [$('#form-save'), $('#form-complete')]; btns.forEach(function (x) { busy(x, true); });
   var done = function () { btns.forEach(function (x) { busy(x, false); }); };
   if (F.reg) {
-    var go = function () {
-      return api('savePerson', S.token, { tei_id: F.opts.tei_id, org_unit: $('#f-ou').value, values: vals })
+    var go = function (force) {
+      return api('savePerson', S.token, { tei_id: F.opts.tei_id, org_unit: $('#f-ou').value, values: vals, force: !!force })
         .then(function (p) { toast(F.opts.tei_id ? 'Details saved.' : 'Registered. Unique ID: ' + p.umid); if (!F.opts.tei_id) S.newUmid = p.umid; return openPerson(p.tei_id); });
     };
     var pre = F.opts.tei_id ? Promise.resolve([]) : api('duplicateCheck', S.token, vals);
@@ -665,13 +757,29 @@ function saveForm(complete) {
       if (!dups.length) return go();
       var open = window.confirm('Possible existing record(s):\n' + dups.map(function (d) { return d.umid + ' · ' + d.name + ' · ' + d.dob + ' · ' + d.village; }).join('\n') + '\n\nOK = open the existing record. Cancel = register as a new woman.');
       return open ? openPerson(dups[0].tei_id) : go();
-    }).catch(function (e) { msg.textContent = e.message; }).then(done);
+    }).catch(function (e) {
+      if (e.message.indexOf('DUPLICATE:') === 0) { showDuplicate(JSON.parse(e.message.slice(10)), go); return; }
+      msg.textContent = e.message;
+    }).then(done);
     return;
   }
   api('saveEvent', S.token, { stage: F.st.code, event_id: F.ev && F.ev.event_id, enrollment_id: S.enrollment.enrollment_id, event_date: $('#f-date').value,
     org_unit: $('#f-ou').value, status: complete ? 'COMPLETED' : 'ACTIVE', values: vals, hidden: F.hidden })
     .then(function () { toast(complete ? 'Saved and completed.' : 'Saved.'); return openPerson(S.person.person.tei_id, S.enrollment.enrollment_id); })
     .catch(function (e) { msg.textContent = e.message; }).then(done);
+}
+/** Registration hit a possible duplicate: show who, and let the user open her or save anyway (the new record is flagged for review). */
+function showDuplicate(d, go) {
+  var box = $('#form-lookup');
+  box.replaceChildren(el('div', { class: 'risk', text: 'Possible duplicate: Unique ID ' + d.uid + ' would match ' + d.matches.length + ' existing client' + (d.matches.length > 1 ? 's' : '') + '.' }));
+  d.matches.forEach(function (m) {
+    box.append(el('div', { class: 'card match' }, [el('div', { class: 'bar', style: 'margin:0' }, [el('b', { class: 'grow', text: m.name + ' · ' + m.umid }), el('span', { class: 'pill warn', text: m.reason })]),
+      el('div', { class: 'person-head' }, [['ANC no.', m.anc_reg_no], ['First ANC', m.first_anc], ['DOB', m.dob]].map(function (x) { return el('div', null, [el('span', { text: x[0] }), x[1] || '—']); })),
+      el('div', { class: 'bar' }, [el('button', { class: 'btn primary', type: 'button', text: 'Open her record', onclick: function () { openPerson(m.tei_id); } })])]));
+  });
+  box.append(el('div', { class: 'bar' }, [el('span', { class: 'small muted grow', text: 'Not the same woman? Correct the ANC number, or save anyway – the new record gets a suffix (e.g. ' + d.uid + 'B) and is flagged for the administrator to review.' }),
+    el('button', { class: 'btn danger', type: 'button', text: 'Save anyway (flag as possible duplicate)', onclick: function (e) { busy(e.target, true); go(true).catch(function (er) { toast(er.message); busy(e.target, false); }); } })]));
+  box.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 /** Lists missing / invalid fields as links; clicking one scrolls to the field, highlights it and puts the cursor in it. */
 function showMissing(title, codes) {
@@ -823,9 +931,25 @@ $('#br-csv').addEventListener('click', function () {
 var ROLE_LIST = ['ADMIN', 'CLINICIAN', 'DATA_ASSOCIATE', 'DISTRICT_VIEWER', 'PARTNER'];
 function loadAdmin() {
   api('adminLinks', S.token).then(function (l) { $('#ad-sheet').href = l.sheet; $('#ad-folder').href = l.folder; });
-  loadUsers(); loadOus();
+  loadUsers(); loadOus(); loadDups();
 }
 $('#ad-filter').addEventListener('change', loadUsers);
+$('#ad-dup-go').addEventListener('click', loadDups);
+function loadDups() {
+  var box = $('#ad-dups'); box.replaceChildren(el('p', { class: 'muted', text: 'Checking…' }));
+  api('listDuplicates', S.token).then(function (groups) {
+    if (!groups.length) { box.replaceChildren(el('div', { class: 'info', text: 'No possible duplicates found.' })); return; }
+    box.replaceChildren.apply(box, groups.map(function (g) {
+      var tb = el('tbody');
+      g.people.forEach(function (x) {
+        tb.append(el('tr', null, [el('td', { text: x.umid }), el('td', { text: x.name }), el('td', { text: x.dob }), el('td', { text: x.first_anc }), el('td', { text: x.anc_reg_no }), el('td', { text: ouName(x.facility) }),
+          el('td', null, [el('div', { class: 'bar', style: 'margin:0' }, [el('button', { class: 'btn sm', text: 'Open', onclick: function () { openPerson(x.tei_id); } }),
+            x.flag ? el('button', { class: 'btn sm ghost', text: 'Not a duplicate', onclick: function () { api('clearDuplicateFlag', S.token, x.tei_id).then(function () { toast('Flag cleared.'); loadDups(); }).catch(function (e) { toast(e.message); }); } }) : null])])]));
+      });
+      return el('div', { class: 'card match' }, [el('b', { text: g.reason }), el('div', { class: 'tw', style: 'margin-top:6px' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['Unique ID', 'Name', 'DOB', 'First ANC', 'ANC no.', 'Facility', ''].map(function (h) { return el('th', { text: h }); }))]), tb])])]);
+    }));
+  }).catch(function (e) { box.replaceChildren(el('div', { class: 'msg', text: e.message })); });
+}
 function loadUsers() {
   var box = $('#ad-users'); box.replaceChildren(el('p', { class: 'muted', text: 'Loading…' }));
   api('adminUsers', S.token).then(function (users) {
@@ -834,7 +958,7 @@ function loadUsers() {
     var tb = el('tbody');
     users.forEach(function (u) {
       var role = el('select', null, ROLE_LIST.map(function (r) { return el('option', { value: r, text: r }); })); role.value = u.role || u.role_requested || 'CLINICIAN';
-      var ou = el('select'); fillOuSelect(ou, S.allOus, true); ou.value = u.org_unit || '';
+      var ou = el('select'); fillOuSelect(ou, S.allOus, true); setOu(ou, u.org_unit || '');
       var act = function (ch, label) { return el('button', { class: 'btn sm' + (ch.status === 'REJECTED' || ch.status === 'DISABLED' ? ' danger' : ''), text: label, onclick: function (e) {
         busy(e.target, true); ch.role = role.value; ch.org_unit = ou.value;
         api('adminUpdateUser', S.token, u.user_id, ch).then(function () { toast('Updated ' + u.email); loadUsers(); }).catch(function (er) { toast(er.message); busy(e.target, false); });
@@ -858,8 +982,8 @@ function loadUsers() {
 function loadOus() {
   api('orgUnits').then(function (ous) {
     S.allOus = ous; fillOuSelect($('#ou-parent'), ous, true);
-    var tb = el('tbody'); ous.forEach(function (o) { tb.append(el('tr', null, [el('td', { text: o.code }), el('td', { text: o.name }), el('td', { text: o.level }), el('td', { text: o.parent_code })])); });
-    $('#ad-ous').replaceChildren(el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['Code', 'Name', 'Level', 'Parent'].map(function (h) { return el('th', { text: h }); }))]), tb])]));
+    var tb = el('tbody'); ous.forEach(function (o) { tb.append(el('tr', null, [el('td', { text: o.code }), el('td', { text: o.name }), el('td', { text: o.level }), el('td', { text: ouName(o.parent_code) }), el('td', { text: o.abbr || '' })])); });
+    $('#ad-ous').replaceChildren(el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['Code', 'Name', 'Level', 'Parent', 'ID initials'].map(function (h) { return el('th', { text: h }); }))]), tb])]));
   });
 }
 $('#ou-add').addEventListener('click', function () {
@@ -889,7 +1013,7 @@ function loadCapUploads() {
     box.replaceChildren(el('div', { class: 'tw', style: 'max-height:40vh' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['Uploaded', 'File', 'Format', 'Org unit', 'Period', 'Description', 'Content', 'Events imported'].map(function (h) { return el('th', { text: h }); }))]), tb])]));
   }).catch(function (e) { box.replaceChildren(el('div', { class: 'msg', text: e.message })); });
 }
-var UMID_RE = /^[A-Z0-9-]+-(\d{4}-\d{5}|\d{6}-\d{2}-\d{2})$/i;
+var UMID_RE = /^([A-Z0-9-]+-(\d{4}-\d{5}|\d{6}-\d{2}-\d{2})|[A-Z][a-z]{1,4}[A-Z][a-z]{1,4}\d{4}[A-Z]?)$/;
 function openUpload(r) {
   var box = $('#cu-detail');
   var head = el('div', { class: 'bar' }, [el('h3', { class: 'grow', text: r.file_name + (r.period ? ' · ' + r.period : '') }),
@@ -957,8 +1081,7 @@ function loadAnalytics() {
   if (!$('#an-from').value) {
     var t = new Date(), f = new Date(t.getFullYear(), t.getMonth() - 11, 1);
     $('#an-from').value = iso(f).slice(0, 7); $('#an-to').value = iso(t).slice(0, 7);
-    var sel = $('#an-ou'); sel.replaceChildren(el('option', { value: '', text: 'All my org units' }));
-    S.ous.slice().sort(function (a, b) { return a.level - b.level; }).forEach(function (o) { sel.append(el('option', { value: o.code, text: ' '.repeat((o.level - 1) * 2) + o.name })); });
+    fillOuSelect($('#an-ou'), S.ous, 'All my org units', false);
   }
   if (!window.Chart) { $('#an-note').textContent = 'The chart library did not load; check the connection and reload.'; }
   $('#an-note').textContent = 'Loading…';

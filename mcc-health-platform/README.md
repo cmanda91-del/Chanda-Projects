@@ -32,11 +32,12 @@ Everything in `gas/` deploys as an Apps Script web app with a Google Sheet as th
 
 - **Fields not collected.** NRC, HIV status/testing, ART and viral-load fields are not collected anywhere.
 - **Registration form.** Kept to essentials: date of first ANC, date of birth or age (each fills the other), ANC register number, names, phone, village, zone, CBV affiliated, next of kin, obstetric and medical history, and consent.
-- **How a client is identified.** By **facility + age at first ANC + date of first ANC**, with name or phone as a tie-breaker.
-- **Unique ID.** Generated when she is registered, as `FACILITY-YYMMDD-AGE-NN` (e.g. `LUM-FAC01-261013-24-01`):
-  - `YYMMDD` is the date of her first ANC visit.
-  - `AGE` is her age in years at that visit.
-  - `NN` is a sequence number for women who share all three.
+- **How a client is identified.** By **facility + age at first ANC + date of first ANC**, with name or phone as a tie-breaker. Capture can search by date of 1st ANC + age.
+- **Unique ID.** `<District initials><Facility initials><ANC number, 4 digits>`, e.g. `LuSi0001` (Sikatengwa, Lumezi) or `MoKa0001` (Kama, Mongu).
+  - Initials are the first two letters. A third (or fourth) letter is used only when another facility in the same district already has those initials, e.g. Kapongolo `Ka`, Kazembe `Kaz`, Kazonde `Kazo`.
+  - The ANC number comes from the facility ANC register. If it is left blank, the next free number at that facility is used.
+  - The ID is generated once, at registration, and never changes afterwards.
+- **Duplicates.** Registration warns when the ID or the facility + first ANC date + age + surname already exist. You can open the existing client, or save anyway: the new ID gets a suffix (`LuSi0001B`) and is flagged for the administrator, who reviews possible duplicates under Administration.
 - **Older records.** Clients registered before this change keep their earlier IDs.
 
 ## Facilities

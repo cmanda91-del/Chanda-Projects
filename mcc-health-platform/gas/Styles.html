@@ -95,4 +95,21 @@ fieldset.sec legend { font-weight:600; padding:0 6px; margin-left:10px; }
 .msg.missing { color:var(--fg); }
 @keyframes flashfld { 0% { box-shadow:0 0 0 3px rgba(179,38,30,.45); background:#fde8e6; } 100% { box-shadow:0 0 0 0 transparent; background:transparent; } }
 .fld.flash { animation: flashfld 2.2s ease-out; border-radius:6px; }
+.outree { position:relative; min-width:220px; flex:1 1 260px; max-width:460px; }
+.outree-btn { font:inherit; width:100%; text-align:left; background:#fff; border:1px solid var(--line); border-radius:var(--r); padding:6px 30px 6px 10px; cursor:pointer; position:relative; min-height:36px; }
+.outree-btn:focus { outline:2px solid color-mix(in srgb, var(--brand) 40%, transparent); }
+.outree-val { display:block; color:var(--fg); } .outree-val.muted { color:var(--muted); }
+.outree-path { display:block; font-size:11px; color:var(--muted); }
+.outree-caret { position:absolute; right:10px; top:50%; transform:translateY(-50%); color:var(--muted); }
+.outree-panel { position:absolute; z-index:40; left:0; right:0; top:calc(100% + 4px); background:#fff; border:1px solid var(--line); border-radius:var(--r); box-shadow:0 8px 24px rgba(0,0,0,.12); max height:340px; max-height:340px; overflow:auto; padding:6px 8px; min-width:280px; }
+.outree-panel ul { list-style:none; margin:0; padding:0; } .outree-panel ul ul { padding-left:18px; border-left:1px dotted var(--line); margin-left:9px; }
+.outree-row { display:flex; align-items:center; gap:4px; padding:1px 0; }
+.outree-tog { width:18px; height:18px; flex:none; border:1px solid var(--line); border-radius:3px; background:#f6f8f9; font:600 13px/1 system-ui; cursor:pointer; color:var(--brand); padding:0; }
+.outree-tog.empty { border:0; background:none; cursor:default; }
+.outree-name { font:inherit; background:none; border:0; text-align:left; padding:3px 6px; border-radius:4px; cursor:pointer; color:var(--fg); }
+.outree-name:hover { background:var(--sel); } .outree-name.sel { background:var(--brand); color:#fff; } .outree-name.nopick { color:var(--muted); }
+.outree-lvl { font-size:10.5px; color:var(--muted); margin-left:2px; }
+.bar .outree { flex:0 1 300px; }
+.ou-label { display:flex; flex-direction:column; gap:4px; font-size:12.5px; color:var(--muted); }
+.ou-label.inline { flex-direction:row; align-items:center; gap:6px; }
 </style>

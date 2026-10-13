@@ -17,8 +17,8 @@ var PII_ROLES = ['ADMIN', 'CLINICIAN', 'DATA_ASSOCIATE', 'DISTRICT_VIEWER'];
 
 var SHEETS = {
   Users: ['user_id', 'email', 'name', 'phone', 'org_unit', 'role_requested', 'role', 'status', 'pw_hash', 'salt', 'created_at', 'approved_by', 'approved_at', 'last_login', 'note'],
-  OrgUnits: ['code', 'name', 'level', 'parent_code', 'program'],
-  Persons: ['tei_id', 'umid', 'org_unit', 'created_by', 'created_at', 'updated_by', 'updated_at'],   // + registration attribute codes
+  OrgUnits: ['code', 'name', 'level', 'parent_code', 'program', 'abbr'],
+  Persons: ['tei_id', 'umid', 'org_unit', 'created_by', 'created_at', 'updated_by', 'updated_at', 'MCC_DUP_FLAG', 'MCC_DOB_ESTIMATED', 'MCC_CONSENT_DATE', 'MCC_SMS_PHONE'],   // + registration attribute codes
   Enrollments: ['enrollment_id', 'tei_id', 'umid', 'org_unit', 'enrollment_date', 'lmp', 'status', 'created_by', 'created_at', 'completed_at'],
   Uploads: ['upload_id', 'file_name', 'mime_type', 'size_bytes', 'format', 'drive_file_id', 'drive_url', 'org_unit', 'period', 'description', 'rows_parsed', 'data_tab', 'events_imported', 'text_excerpt', 'uploaded_by', 'uploaded_at'],
   Submissions: ['received_at', 'instance_id', 'form', 'facility', 'umid', 'status', 'message', 'payload'],
@@ -205,7 +205,25 @@ function auth_(token, roles) {
 function whoami(token) { return publicUser_(auth_(token)); }
 
 // ------------------------------------------------------------------ org units & scope
-function orgUnits() { return readAll_('OrgUnits').filter(function (o) { return String(o.code) !== ''; }).map(function (o) { return { code: String(o.code), name: o.name, level: Number(o.level), parent_code: String(o.parent_code), program: o.program || '' }; }); }
+function orgUnits() { return readAll_('OrgUnits').filter(function (o) { return String(o.code) !== ''; }).map(function (o) { return { code: String(o.code), name: o.name, level: Number(o.level), parent_code: String(o.parent_code), program: o.program || '', abbr: o.abbr || '' }; }); }
+/** Short name for IDs: first 2 letters of the first word (Sikatengwa → Si); 3rd, 4th… letter only when a sibling already uses it (Kapongolo Ka, Kazembe Kaz, Kazonde Kazo). */
+function makeAbbr_(name, taken) {
+  var w = String(name).replace(/[^A-Za-z ]/g, '').trim().split(/\s+/)[0] || 'X';
+  for (var n = 2; n <= w.length; n++) {
+    var c = w.charAt(0).toUpperCase() + w.slice(1, n).toLowerCase();
+    if (taken.indexOf(c) < 0) return c;
+  }
+  var i = 2; while (taken.indexOf(w + i) >= 0) i++; return w + i;
+}
+function assignAbbrs_() {
+  var all = readAll_('OrgUnits').filter(function (o) { return String(o.code) !== ''; });
+  all.filter(function (o) { return Number(o.level) >= 3 && !o.abbr; }).forEach(function (o) {
+    var sibs = all.filter(function (x) { return String(x.parent_code) === String(o.parent_code) && x.abbr; }).map(function (x) { return x.abbr; });
+    if (Number(o.level) === 3) sibs = all.filter(function (x) { return Number(x.level) === 3 && x.abbr; }).map(function (x) { return x.abbr; }); // districts unique nationally
+    o.abbr = makeAbbr_(o.name, sibs);
+    update_('OrgUnits', o._row, { abbr: o.abbr });
+  });
+}
 /** Adds the 7 OHNEZ (Lumezi) and 12 IMNCHN (Mongu) facilities; removes the old placeholder facility when nothing uses it. */
 function seedFacilities_(ss) {
   var have = {}; readAll_('OrgUnits').forEach(function (o) { have[o.code] = o; });
@@ -213,6 +231,7 @@ function seedFacilities_(ss) {
     if (!have[f.code]) append_('OrgUnits', { code: f.code, name: f.name, level: f.level, parent_code: f.parent, program: f.program || '' });
     else if (!have[f.code].program && f.program) update_('OrgUnits', have[f.code]._row, { program: f.program });
   });
+  assignAbbrs_();
   var ph = findBy_('OrgUnits', 'code', 'LUM-FAC01');
   if (ph) {
     var used = ['Persons', 'Enrollments', 'Uploads'].some(function (n) { return readAll_(n).some(function (r) { return String(r.org_unit) === 'LUM-FAC01'; }); });
@@ -333,12 +352,66 @@ function savePerson_(u, p) {
       audit_(u, 'UPDATE', 'person', p.tei_id, '');
       return findBy_('Persons', 'tei_id', p.tei_id);
     }
+    var fac = findBy_('OrgUnits', 'code', p.org_unit);
+    if (!fac || Number(fac.level) < 4) throw new Error('Register her at a facility, not a district or province.');
+    var dist = findBy_('OrgUnits', 'code', fac.parent_code) || {};
+    var people = readAll_('Persons');
+    // ANC number: from the facility ANC register number, or the next free number at this facility when none was given.
+    var m = String(values.MCC_ANC_REG_NO || '').match(/\d+/), num = m ? Number(m[0]) : 0;
+    if (!num) {
+      num = people.filter(function (x) { return String(x.org_unit) === String(p.org_unit); })
+        .reduce(function (mx, x) { var k = String(x.MCC_ANC_REG_NO || '').match(/\d+/); return Math.max(mx, k ? Number(k[0]) : 0); }, 0) + 1;
+      values.MCC_ANC_REG_NO = String(num);
+    }
+    var uid = (dist.abbr || 'Xx') + (fac.abbr || 'Xx') + ('000' + num).slice(-4);
+    var dups = duplicateCandidates_(people, values, p.org_unit, uid);
+    if (dups.length && !p.force) throw new Error('DUPLICATE:' + JSON.stringify({ uid: uid, matches: dups }));
+    if (people.some(function (x) { return x.umid === uid; })) { var sfx = 'B'; while (people.some(function (x) { return x.umid === uid + sfx; })) sfx = String.fromCharCode(sfx.charCodeAt(0) + 1); uid += sfx; }
     var row = Object.assign({}, values, { tei_id: uuid_(), org_unit: p.org_unit, created_by: u.email, created_at: now_() });
-    row.umid = row.MCC_UMID = nextUmid_(p.org_unit, values.MCC_FIRST_ANC_DATE, age);
+    if (dups.length) row.MCC_DUP_FLAG = 'Possible duplicate of ' + dups.map(function (d) { return d.umid + ' (' + d.reason + ')'; }).join('; ');
+    row.umid = row.MCC_UMID = uid;
     append_('Persons', row);
     audit_(u, 'CREATE', 'person', row.tei_id, row.umid);
     return row;
   } finally { lock.releaseLock(); }
+}
+/** Existing clients that look like the same woman: same Unique ID (same facility + ANC number) or same facility, first ANC date, age (±1) and surname. */
+function duplicateCandidates_(people, v, org, uid) {
+  var age = ageAt_(v.MCC_DOB, v.MCC_FIRST_ANC_DATE), sn = String(v.MCC_SURNAME || '').trim().toLowerCase();
+  return people.map(function (x) {
+    var why = '';
+    if (x.umid === uid) why = 'same facility and ANC number';
+    else if (String(x.org_unit) === String(org) && String(x.MCC_FIRST_ANC_DATE).slice(0, 10) === String(v.MCC_FIRST_ANC_DATE).slice(0, 10)
+      && Math.abs(Number(ageAt_(x.MCC_DOB, x.MCC_FIRST_ANC_DATE)) - Number(age)) <= 1 && String(x.MCC_SURNAME).trim().toLowerCase() === sn) why = 'same facility, first ANC date, age and surname';
+    return why ? { tei_id: x.tei_id, umid: x.umid, name: x.MCC_FIRST_NAME + ' ' + x.MCC_SURNAME, dob: x.MCC_DOB, first_anc: x.MCC_FIRST_ANC_DATE, anc_reg_no: x.MCC_ANC_REG_NO, reason: why } : null;
+  }).filter(Boolean);
+}
+/** Admin: groups of clients that may be the same woman, plus records flagged at registration. */
+function listDuplicates(token) {
+  auth_(token, ['ADMIN']);
+  var people = readAll_('Persons'), groups = {}, out = [];
+  people.forEach(function (x) {
+    var m = String(x.MCC_ANC_REG_NO || '').match(/\d+/);
+    if (m) (groups['A|' + x.org_unit + '|' + Number(m[0])] = groups['A|' + x.org_unit + '|' + Number(m[0])] || []).push(x);
+    var k = 'P|' + x.org_unit + '|' + String(x.MCC_FIRST_ANC_DATE).slice(0, 10) + '|' + String(x.MCC_SURNAME).trim().toLowerCase();
+    (groups[k] = groups[k] || []).push(x);
+  });
+  Object.keys(groups).forEach(function (k) {
+    if (groups[k].length < 2) return;
+    out.push({ reason: k.charAt(0) === 'A' ? 'Same facility and ANC number' : 'Same facility, first ANC date and surname',
+      people: groups[k].map(function (x) { return { tei_id: x.tei_id, umid: x.umid, name: x.MCC_FIRST_NAME + ' ' + x.MCC_SURNAME, dob: x.MCC_DOB, first_anc: x.MCC_FIRST_ANC_DATE, anc_reg_no: x.MCC_ANC_REG_NO, facility: x.org_unit, flag: x.MCC_DUP_FLAG || '' }; }) });
+  });
+  people.filter(function (x) { return x.MCC_DUP_FLAG; }).forEach(function (x) {
+    if (!out.some(function (g) { return g.people.some(function (y) { return y.tei_id === x.tei_id; }); }))
+      out.push({ reason: 'Flagged at registration', people: [{ tei_id: x.tei_id, umid: x.umid, name: x.MCC_FIRST_NAME + ' ' + x.MCC_SURNAME, dob: x.MCC_DOB, first_anc: x.MCC_FIRST_ANC_DATE, anc_reg_no: x.MCC_ANC_REG_NO, facility: x.org_unit, flag: x.MCC_DUP_FLAG }] });
+  });
+  return out;
+}
+function clearDuplicateFlag(token, teiId) {
+  var a = auth_(token, ['ADMIN']);
+  var x = findBy_('Persons', 'tei_id', teiId); if (!x) throw new Error('Person not found.');
+  update_('Persons', x._row, { MCC_DUP_FLAG: '' }); audit_(a, 'UPDATE', 'person', teiId, 'duplicate flag cleared');
+  return true;
 }
 function getPerson(token, teiId) {
   var u = auth_(token, PII_ROLES);
@@ -541,6 +614,7 @@ function adminAddOrgUnit(token, o) {
   if (!o.code || !o.name) throw new Error('Code and name are required.');
   if (findBy_('OrgUnits', 'code', o.code)) throw new Error('That code already exists.');
   append_('OrgUnits', { code: String(o.code).trim(), name: o.name, level: Number(o.level || 4), parent_code: o.parent_code || '' });
+  assignAbbrs_();
   audit_(a, 'CREATE', 'org_unit', o.code, o.name);
   return orgUnits();
 }
@@ -788,8 +862,8 @@ function ingestSubmission(key, sub) {
       var age = ageAt_(vals.MCC_DOB, vals.MCC_FIRST_ANC_DATE);
       var ex = readAll_('Persons').filter(function (x) { return String(x.org_unit) === fc && String(x.MCC_FIRST_ANC_DATE).slice(0, 10) === String(vals.MCC_FIRST_ANC_DATE || '').slice(0, 10)
         && Math.abs(Number(ageAt_(x.MCC_DOB, x.MCC_FIRST_ANC_DATE)) - Number(age)) <= 1 && String(x.MCC_SURNAME).toLowerCase() === String(vals.MCC_SURNAME || '').toLowerCase(); })[0] || null;
-      var p = savePerson_(sys, { tei_id: ex ? ex.tei_id : '', org_unit: ex ? ex.org_unit : fc, values: Object.assign({}, ex || {}, vals) });
-      log('OK', ex ? 'Updated existing client' : 'Registered', p.umid);
+      var p = savePerson_(sys, { tei_id: ex ? ex.tei_id : '', org_unit: ex ? ex.org_unit : fc, values: Object.assign({}, ex || {}, vals), force: true });
+      log('OK', ex ? 'Updated existing client' : (p.MCC_DUP_FLAG ? 'Registered – ' + p.MCC_DUP_FLAG : 'Registered'), p.umid);
       return { status: 'ok', umid: p.umid };
     }
     var umid = String(v.umid || '').trim();

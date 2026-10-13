@@ -111,7 +111,7 @@ const G: any = {
 };
 const EXPORTS = ["setup", "adminLinks", "signup", "login", "logout", "whoami", "orgUnits", "myOrgUnits", "homeStats", "searchPersons", "duplicateCheck", "savePerson",
   "getPerson", "enroll", "saveEvent", "uploadFile", "listUploads", "listTables", "browse", "adminUsers", "adminUpdateUser", "adminAddOrgUnit",
-  "lookupClient", "odkForm", "odkClients", "adminIngestKey", "getUpload", "analyticsData", "listSubmissions", "adminKoboSettings", "ingestSubmission", "auth_"];
+  "lookupClient", "odkForm", "odkClients", "adminIngestKey", "getUpload", "analyticsData", "listSubmissions", "adminKoboSettings", "listDuplicates", "clearDuplicateFlag", "ingestSubmission", "auth_"];
 const names = Object.keys(G);
 const App: any = new Function(...names, B.meta + "\n" + B.code + "\nreturn {" + EXPORTS.join(",") + "};")(...names.map((n) => G[n]));
 G.PropertiesService.getScriptProperties().setProperty("RUNTIME", "railway");

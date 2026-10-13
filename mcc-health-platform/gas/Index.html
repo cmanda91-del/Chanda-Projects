@@ -95,7 +95,9 @@
           <div id="cap-clients">
           <div class="bar">
             <label class="inline">Org unit <select id="cap-ou"></select></label>
-            <input id="cap-q" type="search" placeholder="Search Unique ID, name, phone, ANC no., first ANC date">
+            <label class="inline">Date of 1st ANC <input id="cap-anc" type="date"></label>
+            <label class="inline">Age <input id="cap-age" type="number" min="10" max="55" style="width:5rem"></label>
+            <input id="cap-q" type="search" placeholder="or Unique ID, name, phone, ANC no.">
             <button class="btn" id="cap-search">Search</button>
             <button class="btn primary" id="cap-new" data-need="entry">+ Register woman</button>
           </div>
@@ -243,6 +245,7 @@
         <section id="v-admin" class="view" hidden>
           <h1>Administration</h1>
           <div class="bar"><a id="ad-sheet" class="btn ghost" target="_blank" rel="noopener">Open database (Google Sheet)</a><a id="ad-folder" class="btn ghost" target="_blank" rel="noopener">Open uploads folder (Drive)</a></div>
+          <div class="card"><div class="bar"><h3 class="grow">Possible duplicate clients</h3><button class="btn sm" id="ad-dup-go">Check now</button></div><div id="ad-dups" class="small muted">Lists clients sharing a facility and ANC number, or facility, first ANC date and surname, plus records flagged at registration.</div></div>
           <div class="card"><h3>Users &amp; approvals</h3><div class="bar"><select id="ad-filter"><option value="PENDING">Pending</option><option value="">All</option><option value="APPROVED">Approved</option><option value="DISABLED">Disabled</option><option value="REJECTED">Rejected</option></select></div><div id="ad-users"></div></div>
           <div class="card"><h3>Org units</h3>
             <div class="grid4"><input id="ou-code" placeholder="Code (e.g. MoH facility code)"><input id="ou-name" placeholder="Name"><input id="ou-level" type="number" min="1" max="5" value="4" aria-label="Level"><select id="ou-parent"></select></div>
