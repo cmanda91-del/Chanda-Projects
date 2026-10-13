@@ -17,7 +17,7 @@ var PII_ROLES = ['ADMIN', 'CLINICIAN', 'DATA_ASSOCIATE', 'DISTRICT_VIEWER'];
 
 var SHEETS = {
   Users: ['user_id', 'email', 'name', 'phone', 'org_unit', 'role_requested', 'role', 'status', 'pw_hash', 'salt', 'created_at', 'approved_by', 'approved_at', 'last_login', 'note'],
-  OrgUnits: ['code', 'name', 'level', 'parent_code'],
+  OrgUnits: ['code', 'name', 'level', 'parent_code', 'program'],
   Persons: ['tei_id', 'umid', 'org_unit', 'created_by', 'created_at', 'updated_by', 'updated_at'],   // + registration attribute codes
   Enrollments: ['enrollment_id', 'tei_id', 'umid', 'org_unit', 'enrollment_date', 'lmp', 'status', 'created_by', 'created_at', 'completed_at'],
   Uploads: ['upload_id', 'file_name', 'mime_type', 'size_bytes', 'format', 'drive_file_id', 'drive_url', 'org_unit', 'period', 'description', 'rows_parsed', 'data_tab', 'events_imported', 'text_excerpt', 'uploaded_by', 'uploaded_at'],
@@ -47,15 +47,7 @@ function setup() {
   props.setProperty('SPREADSHEET_ID', ss.getId());
   Object.keys(SHEETS).forEach(function (n) { ensureSheet_(ss, n, headersFor_(n)); });
   MCC_META.stages.forEach(function (st) { ensureSheet_(ss, 'EV_' + st.code, headersFor_('EV_' + st.code)); });
-  var ou = ss.getSheetByName('OrgUnits');
-  if (ou.getLastRow() < 2) {
-    ou.getRange(2, 1, 4, 4).setValues([
-      ['ZM', 'Zambia', 1, ''],
-      ['ZM-EP', 'Eastern Province', 2, 'ZM'],
-      ['ZM-EP-LUM', 'Lumezi District', 3, 'ZM-EP'],
-      ['LUM-FAC01', 'Facility 01 (rename to a real facility and code)', 4, 'ZM-EP-LUM'],
-    ]);
-  }
+  seedFacilities_(ss);
   if (!props.getProperty('UPLOAD_FOLDER_ID')) {
     var folder = DriveApp.createFolder(APP_NAME + ' – Uploads');
     props.setProperty('UPLOAD_FOLDER_ID', folder.getId());
@@ -213,7 +205,23 @@ function auth_(token, roles) {
 function whoami(token) { return publicUser_(auth_(token)); }
 
 // ------------------------------------------------------------------ org units & scope
-function orgUnits() { return readAll_('OrgUnits').map(function (o) { return { code: String(o.code), name: o.name, level: o.level, parent_code: String(o.parent_code) }; }); }
+function orgUnits() { return readAll_('OrgUnits').filter(function (o) { return String(o.code) !== ''; }).map(function (o) { return { code: String(o.code), name: o.name, level: Number(o.level), parent_code: String(o.parent_code), program: o.program || '' }; }); }
+/** Adds the 7 OHNEZ (Lumezi) and 12 IMNCHN (Mongu) facilities; removes the old placeholder facility when nothing uses it. */
+function seedFacilities_(ss) {
+  var have = {}; readAll_('OrgUnits').forEach(function (o) { have[o.code] = o; });
+  (MCC_META.facilities || []).forEach(function (f) {
+    if (!have[f.code]) append_('OrgUnits', { code: f.code, name: f.name, level: f.level, parent_code: f.parent, program: f.program || '' });
+    else if (!have[f.code].program && f.program) update_('OrgUnits', have[f.code]._row, { program: f.program });
+  });
+  var ph = findBy_('OrgUnits', 'code', 'LUM-FAC01');
+  if (ph) {
+    var used = ['Persons', 'Enrollments', 'Uploads'].some(function (n) { return readAll_(n).some(function (r) { return String(r.org_unit) === 'LUM-FAC01'; }); });
+    if (!used) {
+      readAll_('Users').forEach(function (u) { if (String(u.org_unit) === 'LUM-FAC01') update_('Users', u._row, { org_unit: 'ZM-EP-LUM' }); });
+      ss.getSheetByName('OrgUnits').deleteRow ? ss.getSheetByName('OrgUnits').deleteRow(ph._row) : update_('OrgUnits', ph._row, { code: '', name: '', level: '', parent_code: '' });
+    } else update_('OrgUnits', ph._row, { name: 'Facility 01 (old placeholder – move clients, then delete)' });
+  }
+}
 function scope_(u) {
   var all = orgUnits();
   if (u.role === 'ADMIN' || !u.org_unit) return u.role === 'ADMIN' ? all.map(function (o) { return o.code; }) : [];
@@ -313,6 +321,7 @@ function savePerson_(u, p) {
   if (age === '' || age < 10 || age > 55) throw new Error('Check the age: it must be 10–55 years at the first ANC visit.');
   if (values.MCC_CONSENT_DATA !== 'true') throw new Error('Record that the client was informed of data use before saving.');
   values.MCC_SMS_PHONE = values.MCC_CONSENT_SMS === 'true' ? (values.MCC_PHONE || '') : '';
+  if (!values.MCC_CONSENT_DATE) values.MCC_CONSENT_DATE = isoDate_(new Date());
   var lock = LockService.getScriptLock(); lock.waitLock(20000);
   try {
     if (p.tei_id) {
@@ -702,6 +711,16 @@ function odkForm(token, code) {
       var bm = f.match(/^MCC_B(\d)_(\w+)$/);
       if (bm && ['SEX', 'OUTCOME', 'BW'].indexOf(bm[2]) < 0) rel = "${MCC_B" + bm[1] + "_OUTCOME}='LIVE'" + (bm[2] === 'KMC' ? " and ${MCC_B" + bm[1] + "_BW} < 2500" : '') + (bm[2] === 'ARV_PROPH' ? " and (${MCC_HIV_RESULT}='POS' or ${MCC_HIV_RESULT}='KNOWN_POS')" : '');
       if (code === 'ANC1' && f === 'MCC_EDD') return;
+      if (f === 'MCC_DOB') { // age or date of birth: either one fills the other
+        add({ type: 'select_one yes_no', name: 'dob_known', label: 'Is her date of birth known?', required: 'yes', appearance: 'horizontal' });
+        add({ type: 'date', name: 'dob_in', label: 'Date of birth', required: 'yes', relevant: "${dob_known}='true'", constraint: '. < today()' });
+        add({ type: 'integer', name: 'age_in', label: 'Age (years) at first ANC', required: 'yes', relevant: "${dob_known}='false'", constraint: '. >= 10 and . <= 55', constraint_message: '10–55 years' });
+        add({ type: 'calculate', name: 'MCC_DOB', calculation: "if(${dob_known}='true', ${dob_in}, if(${age_in}!='', format-date(date(decimal-date-time(${MCC_FIRST_ANC_DATE}) - (${age_in} * 365.25) - 1), '%Y-%m-%d'), ''))" });
+        add({ type: 'calculate', name: 'age_calc', calculation: "if(${MCC_DOB}!='', int((decimal-date-time(${MCC_FIRST_ANC_DATE}) - decimal-date-time(${MCC_DOB})) div 365.25), '')" });
+        add({ type: 'note', name: 'age_note', label: 'Age at first ANC: ${age_calc} years', relevant: "${age_calc}!=''" });
+        add({ type: 'calculate', name: 'MCC_DOB_ESTIMATED', calculation: "if(${dob_known}='false', 'true', 'false')" });
+        return;
+      }
       add({ type: odkType_(f, m), name: f, label: m.name, default: f === 'MCC_FIRST_ANC_DATE' ? 'today()' : '', hint: m.vt === 'ORGANISATION_UNIT' ? 'Facility code' : '', required: m.mand === 'Yes' ? 'yes' : '',
         relevant: rel, constraint: c[0] || (m.vt === 'INTEGER_POSITIVE' ? '. >= 1' : m.vt === 'INTEGER_ZERO_OR_POSITIVE' ? '. >= 0' : ''), constraint_message: c[1] || '',
         appearance: m.vt === 'LONG_TEXT' ? 'multiline' : (m.os && (MCC_META.optionSets[m.os] || []).length > 6 && m.vt !== 'MULTI_TEXT' ? 'minimal' : '') });
@@ -861,7 +880,7 @@ function analyticsData(token, f) {
   var enrollments = readAll_('Enrollments').filter(inSet).map(function (e) {
     var p = people[e.tei_id] || {};
     return { enrollment_id: e.enrollment_id, org_unit: e.org_unit, enrollment_date: e.enrollment_date, lmp: e.lmp, status: e.status,
-      age_band: band(p.MCC_DOB, e.enrollment_date), hiv_status: hivPos[e.enrollment_id] ? 'Positive (test result)' : 'Not positive / not tested', adolescent: band(p.MCC_DOB, e.enrollment_date) === '10–14' || band(p.MCC_DOB, e.enrollment_date) === '15–19' };
+      age_band: band(p.MCC_DOB, e.enrollment_date),  adolescent: band(p.MCC_DOB, e.enrollment_date) === '10–14' || band(p.MCC_DOB, e.enrollment_date) === '15–19' };
   });
   audit_(u, 'ANALYTICS', 'aggregate', f.ou || '', '');
   return { events: events, enrollments: enrollments, orgUnits: orgUnits(), generated: now_() };

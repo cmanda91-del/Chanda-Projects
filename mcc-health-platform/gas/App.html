@@ -86,11 +86,20 @@ function enterApp() {
     show('home');
   });
 }
-function fillOuSelect(sel, ous, placeholder) {
+/** Facility pickers: grouped by district/programme (OHNEZ – Lumezi, IMNCHN – Mongu). facilitiesOnly hides provinces and districts. */
+function fillOuSelect(sel, ous, placeholder, facilitiesOnly) {
   sel.replaceChildren();
   if (placeholder) sel.append(el('option', { value: '', text: 'Select…' }));
-  ous.slice().sort(function (a, b) { return a.level - b.level || String(a.name).localeCompare(b.name); })
-    .forEach(function (o) { sel.append(el('option', { value: o.code, text: ' '.repeat(Math.max(0, (o.level - 1) * 2)) + o.name + ' (' + o.code + ')' })); });
+  var all = S.allOus && S.allOus.length ? S.allOus : ous, nameOf = {}; all.forEach(function (o) { nameOf[o.code] = o; });
+  var higher = ous.filter(function (o) { return o.level < 4; }).sort(function (a, b) { return a.level - b.level || String(a.name).localeCompare(b.name); });
+  if (!facilitiesOnly) higher.forEach(function (o) { sel.append(el('option', { value: o.code, text: '\u00a0'.repeat((o.level - 1) * 2) + o.name })); });
+  var groups = {};
+  ous.filter(function (o) { return o.level >= 4; }).forEach(function (o) { (groups[o.parent_code] = groups[o.parent_code] || []).push(o); });
+  Object.keys(groups).sort().forEach(function (pc) {
+    var d = nameOf[pc] || {}, g = el('optgroup', { label: (d.program ? d.program + ' – ' : '') + (d.name || pc) });
+    groups[pc].sort(function (a, b) { return String(a.name).localeCompare(b.name); }).forEach(function (o) { g.append(el('option', { value: o.code, text: o.name })); });
+    sel.append(g);
+  });
 }
 
 // ================= NAV =================
@@ -132,9 +141,9 @@ function doSearch() {
     rows.forEach(function (p) {
       tb.append(el('tr', { class: 'click', onclick: function () { openPerson(p.tei_id); } }, [
         el('td', { text: p.umid }), el('td', { text: (p.MCC_FIRST_NAME || '') + ' ' + (p.MCC_SURNAME || '') }), el('td', { text: p.MCC_DOB }),
-        el('td', { text: p.MCC_VILLAGE }), el('td', { text: p.MCC_PHONE }), el('td', { text: p.MCC_CUR_EDD }), el('td', { text: p.org_unit })]));
+        el('td', { text: p.MCC_FIRST_ANC_DATE }), el('td', { text: p.MCC_VILLAGE }), el('td', { text: p.MCC_PHONE }), el('td', { text: p.MCC_CUR_EDD }), el('td', { text: ouName(p.org_unit) })]));
     });
-    out.replaceChildren(el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['UMID', 'Name', 'DOB', 'Village', 'Phone', 'Current EDD', 'Org unit'].map(function (h) { return el('th', { text: h }); }))]), tb])]));
+    out.replaceChildren(el('div', { class: 'tw' }, [el('table', { class: 't' }, [el('thead', null, [el('tr', null, ['Unique ID', 'Name', 'DOB', 'First ANC', 'Village', 'Phone', 'Current EDD', 'Facility'].map(function (h) { return el('th', { text: h }); }))]), tb])]));
   }).catch(function (e) { out.replaceChildren(el('div', { class: 'msg', text: e.message })); });
 }
 $('#cap-new').addEventListener('click', function () { openForm({ kind: 'reg', org_unit: $('#cap-ou').value }); });
@@ -149,6 +158,7 @@ function openPerson(teiId, keepEnrollment) {
     renderPerson();
   }).catch(function (e) { box.replaceChildren(el('div', { class: 'msg', text: e.message })); });
 }
+function ouName(c) { var o = (S.allOus || []).filter(function (x) { return x.code === c; })[0]; return o ? o.name : c; }
 function stageName(c) { return (META.stages.filter(function (s) { return s.code === c; })[0] || {}).name || c; }
 function hivPos(extra) {
   return S.person.events.some(function (e) { return e.MCC_HIV_RESULT === 'POS' || e.MCC_HIV_RESULT === 'KNOWN_POS'; }) || (extra && (extra.MCC_HIV_RESULT === 'POS' || extra.MCC_HIV_RESULT === 'KNOWN_POS'));
@@ -159,7 +169,7 @@ function renderPerson() {
     el('div', { class: 'bar' }, [el('h2', { class: 'grow', text: (p.MCC_FIRST_NAME || '') + ' ' + (p.MCC_SURNAME || '') }),
       can('entry') ? el('button', { class: 'btn ghost', text: 'Edit details', onclick: function () { openForm({ kind: 'reg', tei_id: p.tei_id, values: p, org_unit: p.org_unit }); } }) : null]),
     el('div', { class: 'person-head' }, [['UMID', p.umid], ['Date of birth', p.MCC_DOB + (has(p.MCC_DOB) ? ' (' + yearsBetween(p.MCC_DOB, today()) + ' y)' : '')], ['Village / zone', [p.MCC_VILLAGE, p.MCC_ZONE].filter(has).join(' / ')],
-      ['Phone', p.MCC_PHONE], ['First ANC', p.MCC_FIRST_ANC_DATE], ['Age at first ANC', has(p.MCC_DOB) && has(p.MCC_FIRST_ANC_DATE) ? yearsBetween(p.MCC_DOB, p.MCC_FIRST_ANC_DATE) + ' y' : ''], ['ANC reg. no.', p.MCC_ANC_REG_NO], ['Facility', p.org_unit]]
+      ['Phone', p.MCC_PHONE], ['First ANC', p.MCC_FIRST_ANC_DATE], ['Age at first ANC', has(p.MCC_DOB) && has(p.MCC_FIRST_ANC_DATE) ? yearsBetween(p.MCC_DOB, p.MCC_FIRST_ANC_DATE) + ' y' : ''], ['ANC reg. no.', p.MCC_ANC_REG_NO], ['CBV', p.MCC_CBV], ['Facility', ouName(p.org_unit)]]
       .map(function (x) { return el('div', null, [el('span', { text: x[0] }), x[1] || '—']); }))]);
   var enrCard = el('div', { class: 'card' });
   var sel = el('select', { 'aria-label': 'Pregnancy' });
@@ -169,7 +179,7 @@ function renderPerson() {
   var hasActive = d.enrollments.some(function (e) { return e.status === 'ACTIVE'; });
   enrCard.append(el('div', { class: 'bar' }, [el('h3', { class: 'grow', text: 'Pregnancies' }), d.enrollments.length ? sel : el('span', { class: 'muted', text: 'Not enrolled yet' })]));
   if (!hasActive && can('entry')) {
-    var ed = el('input', { type: 'date', value: today(), max: today() }), lmp = el('input', { type: 'date', max: today() });
+    var ed = el('input', { type: 'date', value: !d.enrollments.length && has(p.MCC_FIRST_ANC_DATE) ? String(p.MCC_FIRST_ANC_DATE).slice(0, 10) : today(), max: today() }), lmp = el('input', { type: 'date', max: today() });
     var msg = el('span', { class: 'msg' });
     enrCard.append(el('div', { class: 'grid4' }, [el('label', null, ['Booking (ANC1) date', ed]), el('label', null, ['Date of LMP (or ultrasound-derived LMP)', lmp]),
       el('div', { style: 'display:flex;align-items:flex-end' }, [el('button', { class: 'btn primary', text: 'Enroll new pregnancy', onclick: function (ev) {
@@ -247,11 +257,21 @@ function inputFor(code, value, onChange) {
   } else if (vt === 'ORGANISATION_UNIT') {
     node = el('select', { onchange: fire }); fillOuSelect(node, S.allOus, true); node.value = value || ''; read = function () { return node.value; };
   } else if (vt === 'AGE') {
-    var dob = el('input', { type: 'date', value: value || '', max: today(), oninput: fire });
-    var yrs = el('input', { type: 'number', min: 10, max: 60, placeholder: 'or age (years)', style: 'max-width:9rem', oninput: function () {
-      if (has(yrs.value)) { var d = new Date(); d.setFullYear(d.getFullYear() - Number(yrs.value)); d.setMonth(0, 1); dob.value = iso(d); fire(); }
-    } });
-    node = el('div', { class: 'bar', style: 'margin:0' }, [dob, yrs]); read = function () { return dob.value; };
+    // Date of birth and age stay in step: typing either fills the other. Age is counted at the first ANC visit (today if not entered yet).
+    var refDate = function () { return (S.form && S.form.values.MCC_FIRST_ANC_DATE) || today(); };
+    var dob = el('input', { type: 'date', value: value || '', max: today(), 'aria-label': 'Date of birth' });
+    var yrs = el('input', { type: 'number', min: 10, max: 60, placeholder: 'Age', 'aria-label': 'Age in years', style: 'max-width:6.5rem' });
+    var syncAge = function () { yrs.value = has(dob.value) ? yearsBetween(dob.value, refDate()) : ''; };
+    dob.addEventListener('input', function () { syncAge(); if (S.form) S.form.values.MCC_DOB_ESTIMATED = 'false'; fire(); });
+    yrs.addEventListener('input', function () {
+      if (!has(yrs.value)) return;
+      var r = new Date(refDate() + 'T00:00:00'); r.setFullYear(r.getFullYear() - Number(yrs.value));
+      dob.value = iso(r); if (S.form) S.form.values.MCC_DOB_ESTIMATED = 'true'; fire();
+    });
+    syncAge();
+    node = el('div', { class: 'bar', style: 'margin:0' }, [dob, el('span', { class: 'small muted', text: 'or age' }), yrs, el('span', { class: 'small muted', text: 'years' })]);
+    node.syncAge = syncAge;
+    read = function () { return dob.value; };
   } else {
     var type = { DATE: 'date', DATETIME: 'datetime-local', NUMBER: 'number', INTEGER: 'number', INTEGER_POSITIVE: 'number', INTEGER_ZERO_OR_POSITIVE: 'number', PHONE_NUMBER: 'tel' }[vt] || 'text';
     if (vt === 'LONG_TEXT') node = el('textarea', { rows: 2, readonly: auto, oninput: fire });
@@ -261,7 +281,7 @@ function inputFor(code, value, onChange) {
   return { node: node, read: read, set: function (v) {
     v = has(v) ? String(v) : '';
     if (node.tagName === 'SELECT' || node.tagName === 'INPUT' || node.tagName === 'TEXTAREA') node.value = v;
-    else if (vt === 'AGE') $('input[type=date]', node).value = v;
+    else if (vt === 'AGE') { $('input[type=date]', node).value = v; node.syncAge(); }
     else $$('input', node).forEach(function (i) { i.checked = i.type === 'checkbox' && vt !== 'TRUE_ONLY' ? v.split(',').indexOf(i.value) >= 0 : (vt === 'TRUE_ONLY' ? v === 'true' : i.value === v); });
   } };
 }
@@ -277,15 +297,17 @@ function openForm(opts) {
   $('#form-title').textContent = st.name + (reg ? '' : ' — ' + (S.person.person.MCC_FIRST_NAME || '') + ' ' + (S.person.person.MCC_SURNAME || '') + ' (' + S.person.person.umid + ')');
   var head = $('#form-head'); head.replaceChildren();
   if (reg) {
-    var ou = el('select', { id: 'f-ou' }); fillOuSelect(ou, S.ous, false); ou.value = opts.org_unit || (S.ous[0] && S.ous[0].code);
-    head.append(el('label', null, ['Registering facility', ou]));
+    var ou = el('select', { id: 'f-ou' }); fillOuSelect(ou, S.ous, true, true);
+    var defOu = opts.org_unit || S.user.org_unit || '';
+    ou.value = S.ous.some(function (o) { return o.code === defOu && o.level >= 4; }) ? defOu : '';
+    head.append(el('label', { class: 'fld', 'data-code': 'org_unit' }, [el('span', null, ['Registering facility', el('span', { class: 'req', text: ' *' })]), ou]));
     if (!opts.tei_id) ou.addEventListener('change', function () { recompute(); scheduleLookup(); });
     if (opts.tei_id) head.append(el('label', null, ['UMID', el('input', { value: opts.values.umid, readonly: true })]));
   } else {
     var date = el('input', { type: 'date', id: 'f-date', max: today(), value: ev ? String(ev.event_date).slice(0, 10) : today() });
     date.addEventListener('input', recompute);
     head.append(el('label', null, [st.code === 'DEL' ? 'Event date (delivery date)' : 'Visit date', date]));
-    var euo = el('select', { id: 'f-ou' }); fillOuSelect(euo, S.ous, false); euo.value = (ev && ev.org_unit) || $('#cap-ou').value || S.enrollment.org_unit;
+    var euo = el('select', { id: 'f-ou' }); fillOuSelect(euo, S.ous, false, true); euo.value = (ev && ev.org_unit) || $('#cap-ou').value || S.enrollment.org_unit;
     head.append(el('label', null, ['Org unit', euo]));
   }
   var form = $('#form-body'); form.replaceChildren();
@@ -602,6 +624,7 @@ function recompute() {
 }
 function applyRules(r) {
   var F = S.form;
+  if (F.inputs.MCC_DOB && F.inputs.MCC_DOB.node.syncAge && document.activeElement !== $('input[type=number]', F.inputs.MCC_DOB.node)) F.inputs.MCC_DOB.node.syncAge();
   Object.keys(r.assign).forEach(function (f) { if (F.inputs[f]) { F.values[f] = r.assign[f]; F.inputs[f].set(r.assign[f]); } });
   F.hidden = [];
   F.st.sections.forEach(function (s) {
@@ -613,20 +636,22 @@ function applyRules(r) {
     });
     F.secs[s.name].hidden = visible === 0;
   });
-  F.errors = Object.keys(r.err).filter(function (f) { return F.hidden.indexOf(f) < 0 || !F.inputs[f]; }).map(function (f) { return r.err[f]; });
+  F.errorFields = Object.keys(r.err).filter(function (f) { return F.hidden.indexOf(f) < 0 && F.inputs[f]; });
+  F.errors = F.errorFields.map(function (f) { return r.err[f]; });
   var b = $('#form-banner'); b.replaceChildren();
   r.banner.forEach(function (t) { b.append(el('div', { class: 'risk', text: t })); });
   r.info.forEach(function (t) { b.append(el('div', { class: 'info', text: t })); });
 }
 function saveForm(complete) {
   var F = S.form, msg = $('#form-msg'); msg.className = 'msg'; msg.textContent = '';
-  if (F.errors && F.errors.length) { msg.textContent = 'Fix first: ' + F.errors[0]; return; }
+  if (F.errors && F.errors.length) { showMissing('Fix first:', F.errorFields); return; }
   var vals = {};
   Object.keys(F.values).forEach(function (k) { if (F.hidden.indexOf(k) < 0) vals[k] = F.values[k]; });
   if (complete || F.reg) {
     var miss = [];
-    F.st.sections.forEach(function (s) { s.fields.forEach(function (f) { if (META.fields[f].mand === 'Yes' && F.hidden.indexOf(f) < 0 && !has(vals[f])) miss.push(META.fields[f].name); }); });
-    if (miss.length) { msg.textContent = 'Required: ' + miss.slice(0, 6).join(', ') + (miss.length > 6 ? '…' : ''); return; }
+    if (F.reg && !$('#f-ou').value) miss.push('org_unit');
+    F.st.sections.forEach(function (s) { s.fields.forEach(function (f) { if (META.fields[f].mand === 'Yes' && F.hidden.indexOf(f) < 0 && !has(vals[f])) miss.push(f); }); });
+    if (miss.length) { showMissing('Still required:', miss); return; }
   }
   var btns = [$('#form-save'), $('#form-complete')]; btns.forEach(function (x) { busy(x, true); });
   var done = function () { btns.forEach(function (x) { busy(x, false); }); };
@@ -647,6 +672,23 @@ function saveForm(complete) {
     org_unit: $('#f-ou').value, status: complete ? 'COMPLETED' : 'ACTIVE', values: vals, hidden: F.hidden })
     .then(function () { toast(complete ? 'Saved and completed.' : 'Saved.'); return openPerson(S.person.person.tei_id, S.enrollment.enrollment_id); })
     .catch(function (e) { msg.textContent = e.message; }).then(done);
+}
+/** Lists missing / invalid fields as links; clicking one scrolls to the field, highlights it and puts the cursor in it. */
+function showMissing(title, codes) {
+  var msg = $('#form-msg'); msg.className = 'msg missing'; msg.replaceChildren(el('b', { text: title + ' ' }));
+  codes.forEach(function (c, i) {
+    var name = c === 'org_unit' ? 'Registering facility' : (META.fields[c] ? META.fields[c].name : c);
+    msg.append(el('button', { type: 'button', class: 'linkbtn', text: name, onclick: function () { goToField(c); } }), i < codes.length - 1 ? ', ' : '');
+  });
+  goToField(codes[0]);
+}
+function goToField(c) {
+  var w = c === 'org_unit' ? $('#form-head .fld[data-code="org_unit"]') : S.form.wraps[c];
+  if (!w) return;
+  w.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  w.classList.remove('flash'); void w.offsetWidth; w.classList.add('flash');
+  var i = w.querySelector('input:not([type=radio]):not([type=checkbox]), select, textarea') || w.querySelector('input');
+  if (i) setTimeout(function () { i.focus({ preventScroll: true }); }, 350);
 }
 $('#form-save').addEventListener('click', function () { saveForm(false); });
 $('#form-complete').addEventListener('click', function () { saveForm(true); });
@@ -977,7 +1019,7 @@ function drawDashboard() {
   var kpis = [['ANC 1 visits', anc1.length.toLocaleString(), ''], ['ANC 1 before 12 weeks', fmtPct(pct(early, anc1.length)), early + ' of ' + anc1.length],
     ['4+ ANC contacts', fmtPct(pct(anc4, cohort.length)), anc4 + ' of ' + cohort.length + ' pregnancies enrolled'], ['Deliveries', del.length.toLocaleString(), fmtPct(pct(fac, del.length)) + ' in a facility'],
     ['Skilled birth attendance', fmtPct(pct(sba, del.length)), 'C-section rate ' + fmtPct(pct(cs, del.length))], ['PNC within 48 h', fmtPct(pct(p48, del.length)), p48 + ' of ' + del.length + ' deliveries'],
-    ['HIV tested at ANC 1', fmtPct(pct(hivT, anc1.length)), ''], ['High-risk at booking', fmtPct(pct(risk, anc1.length)), risk + ' women'],
+    ['High-risk at booking', fmtPct(pct(risk, anc1.length)), risk + ' women'],
     ['IPTp3+ doses', ipt3.toLocaleString(), ''], ['Stillbirths /1000 births', births.LIVE + births.FSB + births.MSB ? Math.round((births.FSB + births.MSB) / (births.LIVE + births.FSB + births.MSB) * 1000) : '—', births.FSB + ' fresh, ' + births.MSB + ' macerated'],
     ['Low birth weight', fmtPct(pct(lbw, births.LIVE)), lbw + ' of ' + births.LIVE + ' live births'], ['Breastfed within 1 h', fmtPct(pct(bf1, births.LIVE)), '']];
   $('#an-kpis').replaceChildren.apply($('#an-kpis'), kpis.map(function (k) { return el('div', { class: 'tile' }, [el('b', { text: String(k[1]) }), el('span', { text: k[0] }), el('span', { class: 'delta', text: k[2] })]); }));
@@ -1008,8 +1050,7 @@ function drawDashboard() {
   var rr = {}; ancM.forEach(function (e) { String(e.MCC_RISK_REASONS || '').split(';').map(function (x) { return x.trim(); }).filter(Boolean).forEach(function (x) { rr[x] = (rr[x] || 0) + 1; }); });
   var rk = Object.keys(rr).sort(function (a, b) { return rr[b] - rr[a]; }).slice(0, 10);
   chart('risk', { type: 'bar', data: { labels: rk, datasets: [{ label: 'Contacts', data: rk.map(function (k) { return rr[k]; }), backgroundColor: '#b5446e', borderRadius: 3 }] }, options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } } } } });
-  var sc = [['Syphilis', function (e) { return /REACTIVE/.test(e.MCC_SYPH_RESULT || ''); }], ['HIV', function (e) { return e.MCC_HIV_RESULT === 'POS' || e.MCC_HIV_RESULT === 'NEG' || e.MCC_HIV_RESULT === 'KNOWN_POS'; }],
-    ['Hepatitis B', function (e) { return e.MCC_HBSAG_RESULT === 'POS' || e.MCC_HBSAG_RESULT === 'NEG'; }], ['Haemoglobin', function (e) { return e.MCC_HB_STATUS === 'DONE'; }], ['TB symptoms', function (e) { return e.MCC_TB_SCREEN && e.MCC_TB_SCREEN !== 'ND'; }]];
+  var sc = [['Syphilis', function (e) { return /REACTIVE/.test(e.MCC_SYPH_RESULT || ''); }], ['Hepatitis B', function (e) { return e.MCC_HBSAG_RESULT === 'POS' || e.MCC_HBSAG_RESULT === 'NEG'; }], ['Haemoglobin', function (e) { return e.MCC_HB_STATUS === 'DONE'; }], ['TB symptoms', function (e) { return e.MCC_TB_SCREEN && e.MCC_TB_SCREEN !== 'ND'; }]];
   chart('screen', { type: 'bar', data: { labels: sc.map(function (x) { return x[0]; }), datasets: [{ label: '% screened', data: sc.map(function (x) { return pct(anc1.filter(x[1]).length, anc1.length); }), backgroundColor: PALETTE[2], borderRadius: 3 }] },
     options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, max: 100, ticks: { callback: function (v) { return v + '%'; } } } } } });
   var ab = countBy(cohort, function (e) { return e.age_band; }), bands = ['10–14', '15–19', '20–24', '25–49', '50+', 'Unknown'].filter(function (b) { return ab[b]; });
@@ -1062,7 +1103,7 @@ function fillVizFields() {
   var nums = f.filter(function (c) { return /NUMBER|INTEGER/.test(META.fields[c].vt); });
   var opt = function (v, t) { return el('option', { value: v, text: t }); };
   $('#vz-measure').replaceChildren.apply($('#vz-measure'), [opt('count', 'Number of events'), opt('women', 'Number of women (pregnancies)')].concat(nums.map(function (c) { return opt('avg:' + c, 'Average ' + META.fields[c].name); })).concat(nums.map(function (c) { return opt('sum:' + c, 'Total ' + META.fields[c].name); })));
-  var dims = [opt('month', 'Month'), opt('org_unit', 'Org unit'), opt('age_band', 'Age band'), opt('hiv_status', 'HIV test result (any visit)')].concat(cats.map(function (c) { return opt('f:' + c, META.fields[c].name); }));
+  var dims = [opt('month', 'Month'), opt('org_unit', 'Org unit'), opt('age_band', 'Age band')].concat(cats.map(function (c) { return opt('f:' + c, META.fields[c].name); }));
   $('#vz-dim').replaceChildren.apply($('#vz-dim'), dims.map(function (o) { return o.cloneNode(true); }));
   $('#vz-series').replaceChildren.apply($('#vz-series'), [opt('', 'None')].concat(dims.map(function (o) { return o.cloneNode(true); })));
   $('#vz-ffield').replaceChildren.apply($('#vz-ffield'), [opt('', 'No filter')].concat(cats.map(function (c) { return opt(c, META.fields[c].name); })));
@@ -1110,7 +1151,7 @@ function drawViz() {
     if (!dim) return ['All'];
     if (dim === 'month') return [String(e.event_date).slice(0, 7)];
     if (dim === 'org_unit') return [ous[e.org_unit] || e.org_unit];
-    if (dim === 'age_band' || dim === 'hiv_status') { var x = enr[e.enrollment_id]; return [x ? (x[dim] || 'Unknown') : 'Unknown']; }
+    if (dim === 'age_band') { var x = enr[e.enrollment_id]; return [x ? (x[dim] || 'Unknown') : 'Unknown']; }
     var f = dim.slice(2), m = META.fields[f], v = String(e[f] === undefined ? '' : e[f]);
     if (!v) return ['(blank)'];
     return v.split(',').map(function (x) { return m.os ? label(m.os, x) : (x === 'true' ? 'Yes' : x === 'false' ? 'No' : x); });

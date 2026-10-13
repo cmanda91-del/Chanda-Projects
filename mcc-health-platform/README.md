@@ -30,10 +30,15 @@ Everything in `gas/` deploys as an Apps Script web app with a Google Sheet as th
 
 ## Client identification
 
-- **Fields not collected.** NRC, HIV status and ART number are not collected at registration.
+- **Fields not collected.** NRC, HIV status/testing, ART and viral-load fields are not collected anywhere.
+- **Registration form.** Kept to essentials: date of first ANC, date of birth or age (each fills the other), ANC register number, names, phone, village, zone, CBV affiliated, next of kin, obstetric and medical history, and consent.
 - **How a client is identified.** By **facility + age at first ANC + date of first ANC**, with name or phone as a tie-breaker.
 - **Unique ID.** Generated when she is registered, as `FACILITY-YYMMDD-AGE-NN` (e.g. `LUM-FAC01-261013-24-01`):
   - `YYMMDD` is the date of her first ANC visit.
   - `AGE` is her age in years at that visit.
   - `NN` is a sequence number for women who share all three.
 - **Older records.** Clients registered before this change keep their earlier IDs.
+
+## Facilities
+
+On start-up the server adds the 7 OHNEZ facilities in Lumezi and the 12 IMNCHN facilities in Mongu (`MCC_META.facilities` in `gas/Metadata.gs`). Codes are `LUM-…` and `MON-…`. The old placeholder facility `LUM-FAC01` is removed automatically when nothing uses it.
