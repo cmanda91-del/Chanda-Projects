@@ -1,0 +1,9 @@
+{
+  "name": "ZedPrep - AI exam tutor",
+  "short_name": "ZedPrep",
+  "start_url": "/#/home",
+  "display": "standalone",
+  "background_color": "#f7f5f0",
+  "theme_color": "#0b6b3a",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "zedprep",
+  "version": "1.0.0",
+  "description": "ZedPrep - AI exam preparation tutor for Zambian Grade 7, 9 and 12 learners",
+  "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "start": "node --no-warnings src/server.js",
+    "dev": "node --no-warnings --watch src/server.js"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "src/server.js"
+}

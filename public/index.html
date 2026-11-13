@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ZedPrep - AI exam tutor for Grade 7, 9 and 12</title>
+  <meta name="description" content="Practise for your Grade 7, 9 and 12 exams with an AI tutor. Instant marking, step-by-step explanations, in English, Nyanja and Bemba.">
+  <meta name="theme-color" content="#0b6b3a">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a href="#/" class="brand" aria-label="ZedPrep home"><span class="logo" aria-hidden="true">Z</span><span>ZedPrep</span></a>
+    <div id="topbar-right"></div>
+  </header>
+  <div id="banner" hidden></div>
+  <main id="app" tabindex="-1"><div class="loading">Loading…</div></main>
+  <nav id="tabbar" class="tabbar" hidden>
+    <a href="#/home" data-tab="home"><span class="ti">⌂</span>Home</a>
+    <a href="#/practice" data-tab="practice"><span class="ti">✎</span>Practice</a>
+    <a href="#/tutor" data-tab="tutor"><span class="ti">💬</span>Tutor</a>
+    <a href="#/progress" data-tab="progress"><span class="ti">▲</span>Progress</a>
+    <a href="#/account" data-tab="account"><span class="ti">☺</span>Account</a>
+  </nav>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
