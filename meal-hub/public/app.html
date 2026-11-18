@@ -4004,7 +4004,11 @@ const css=`
 :root{--ui-r:16px;--ui-sh:0 1px 2px rgba(16,42,67,.06),0 8px 24px rgba(16,42,67,.07);--ui-sh-h:0 4px 10px rgba(16,42,67,.08),0 16px 36px rgba(16,42,67,.12)}
 /* layout: remove the empty band under the menu */
 .app{grid-template-rows:auto 1fr!important;align-content:start}
-#side{align-self:start;position:relative;z-index:25}
+#side{align-self:start;position:sticky!important;top:calc(48px + env(safe-area-inset-top,0px));z-index:25;background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:saturate(1.4) blur(8px);border-bottom:1px solid color-mix(in srgb,var(--line) 70%,transparent);transition:box-shadow .2s}
+body.hub-scrolled #side{box-shadow:0 6px 18px rgba(16,42,67,.10)}
+.hlbar{top:calc(var(--navh,56px) + 56px)!important}
+.ssbar,.bsbar,.d2bar2{top:calc(48px + var(--navh,56px) + 6px)!important;z-index:20!important}
+html{scroll-padding-top:calc(var(--navh,56px) + 64px)}
 .gnav{flex-wrap:wrap;row-gap:8px}
 .gdd{position:relative}
 .gmenu{z-index:60!important;max-height:calc(100vh - 140px);overflow:auto;box-shadow:0 16px 40px rgba(16,42,67,.22)!important;border-radius:14px!important}
@@ -4077,12 +4081,14 @@ const st=document.createElement('style');st.textContent=css;document.head.append
 
 /* count up KPI numbers and fade content in, only when the page (tab) changes */
 let lastKey=null;
+const navH=()=>{const sd=document.getElementById('side');if(sd)document.documentElement.style.setProperty('--navh',sd.offsetHeight+'px')};
+addEventListener('scroll',()=>document.body.classList.toggle('hub-scrolled',scrollY>8),{passive:true});addEventListener('resize',navH);
 function countUp(root){if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
   root.querySelectorAll('.card.kpi .v').forEach(el=>{if(el.children.length)return;const raw=el.textContent.trim();const m=raw.match(/^(\d[\d,]*(?:\.\d+)?)(%?)$/);if(!m)return;
     const to=+m[1].replace(/,/g,''),suf=m[2],sep=/,/.test(m[1]),dec=(m[1].split('.')[1]||'').length;if(!to)return;const t0=performance.now(),d=850;
     const fmt=x=>(sep?Math.round(x).toLocaleString('en-GB'):x.toFixed(dec))+suf;
     const step=t=>{const p=Math.min(1,(t-t0)/d),e=1-Math.pow(1-p,3);el.textContent=fmt(to*e);if(p<1)requestAnimationFrame(step);else el.textContent=raw};requestAnimationFrame(step)})}
-const _render=render;render=function(){_render.apply(this,arguments);try{const v=document.getElementById('view');const key=(S.pid||'')+'/'+(S.tab||'');
+const _render=render;render=function(){_render.apply(this,arguments);try{navH();const v=document.getElementById('view');const key=(S.pid||'')+'/'+(S.tab||'');
   if(v&&key!==lastKey&&S.proj&&v.children.length&&!/Loading/.test(v.textContent.slice(0,40))){lastKey=key;v.classList.remove('ui-in');void v.offsetWidth;v.classList.add('ui-in');countUp(v);setTimeout(()=>v.classList.remove('ui-in'),900)}}catch(e){}};
 })();
 
