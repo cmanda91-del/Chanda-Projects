@@ -22,6 +22,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS docs (path TEXT PRIMARY KEY, coll TEXT NOT NULL, data TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE INDEX IF NOT EXISTS docs_coll ON docs(coll);
   CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pass_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'viewer');
+  CREATE TABLE IF NOT EXISTS deleted (path TEXT PRIMARY KEY, coll TEXT NOT NULL, at TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS docs_upd ON docs(updated_at);
   CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, name TEXT, type TEXT, bytes BLOB NOT NULL, created_at TEXT NOT NULL);
 `);
 
@@ -62,6 +64,45 @@ const qGet = db.prepare('SELECT data FROM docs WHERE path=?');
 const qPut = db.prepare('INSERT INTO docs(path,coll,data,updated_at) VALUES(?,?,?,?) ON CONFLICT(path) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at');
 const qDel = db.prepare('DELETE FROM docs WHERE path=?');
 const qColl = db.prepare('SELECT path,data FROM docs WHERE coll=?');
+const qTombDel = db.prepare('DELETE FROM deleted WHERE path=?');
+const qTomb = db.prepare('INSERT INTO deleted(path,coll,at) VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET at=excluded.at');
+
+// ---------- shared store operations (used by the website API and the MCP endpoint) ----------
+class StoreError extends Error { constructor(msg, status = 400) { super(msg); this.status = status; } }
+function sGet(dp) { if (!validPath(dp, true)) throw new StoreError('Bad path'); const r = qGet.get(dp); return r ? { exists: true, data: JSON.parse(r.data) } : { exists: false }; }
+function sWrite(dp, data, mergeIt) {
+  if (!validPath(dp, true)) throw new StoreError('Bad path');
+  if (!isObj(data)) throw new StoreError('Body must be an object');
+  let body = data;
+  if (mergeIt) { const r = qGet.get(dp); if (!r) throw new StoreError('Document does not exist'); body = merge(JSON.parse(r.data), data); }
+  const str = JSON.stringify(body); if (str.length > 1024 * 1024) throw new StoreError('Document too large');
+  qPut.run(dp, collOf(dp), str, now()); qTombDel.run(dp); broadcast([dp]);
+}
+function sDelete(dp) { if (!validPath(dp, true)) throw new StoreError('Bad path'); qDel.run(dp); qTomb.run(dp, collOf(dp), now()); broadcast([dp]); }
+function sQuery({ coll, where = [], orderBy, dir = 'asc', limit }) {
+  if (!validPath(coll, false)) throw new StoreError('Bad path');
+  let docs = qColl.all(coll).map(r => ({ id: r.path.split('/').pop(), data: JSON.parse(r.data) }));
+  for (const w of where || []) { const f = OPS[w.op]; if (!f) throw new StoreError('Bad operator'); docs = docs.filter(d => d.data[w.field] !== undefined && f(d.data[w.field], w.value)); }
+  if (orderBy) docs.sort((x, y) => cmp(x.data[orderBy], y.data[orderBy]) * (dir === 'desc' ? -1 : 1));
+  else docs.sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+  if (limit) docs = docs.slice(0, Number(limit));
+  return { docs };
+}
+function sImport(docs, replace) {
+  if (!Array.isArray(docs) || !docs.length) throw new StoreError('No records');
+  if (docs.some(d => !d || !validPath(d.path, true) || !isObj(d.data))) throw new StoreError('Invalid record');
+  const t = now();
+  db.exec('BEGIN');
+  try { if (replace) db.exec('DELETE FROM docs'); for (const d of docs) { qPut.run(d.path, collOf(d.path), JSON.stringify(d.data), t); qTombDel.run(d.path); } db.exec('COMMIT'); }
+  catch (e) { db.exec('ROLLBACK'); throw new StoreError(e.message); }
+  broadcast(['*']); return { imported: docs.length };
+}
+function sChanges(since) {
+  const t = now(); since = String(since || '');
+  const changed = db.prepare('SELECT path FROM docs WHERE updated_at>=?').all(since).map(r => r.path);
+  const gone = db.prepare('SELECT path FROM deleted WHERE at>=?').all(since).map(r => r.path);
+  return { now: t, paths: changed.concat(gone), count: db.prepare('SELECT count(*) n FROM docs').get().n };
+}
 
 // realtime (Server-Sent Events)
 const clients = new Set();
@@ -97,6 +138,48 @@ function page(res, name) {
 }
 const redirect = (res, to) => { res.writeHead(302, { Location: to }); res.end(); };
 
+// ---------- MCP endpoint: lets the Claude version of the Hub use this database as its own ----------
+const MCP_TOKEN = process.env.MCP_TOKEN || '';
+const pathProp = { type: 'string', description: 'Document path, e.g. indicators/R1-01' };
+const objProp = { type: 'object', description: 'Document body (JSON object)' };
+const TOOLS = [
+  { name: 'hub_get', description: 'Read one MEAL Hub document by path.', inputSchema: { type: 'object', properties: { path: pathProp }, required: ['path'] }, run: a => sGet(a.path) },
+  { name: 'hub_query', description: 'List documents in a MEAL Hub collection, optionally filtered and sorted.', inputSchema: { type: 'object', properties: { coll: { type: 'string' }, where: { type: 'array', items: { type: 'object' } }, orderBy: { type: 'string' }, dir: { type: 'string' }, limit: { type: 'number' } }, required: ['coll'] }, run: a => sQuery(a) },
+  { name: 'hub_set', description: 'Create or replace a MEAL Hub document.', inputSchema: { type: 'object', properties: { path: pathProp, data: objProp }, required: ['path', 'data'] }, run: a => (sWrite(a.path, a.data, false), { ok: true }) },
+  { name: 'hub_update', description: 'Merge fields into an existing MEAL Hub document.', inputSchema: { type: 'object', properties: { path: pathProp, data: objProp }, required: ['path', 'data'] }, run: a => (sWrite(a.path, a.data, true), { ok: true }) },
+  { name: 'hub_delete', description: 'Delete a MEAL Hub document.', inputSchema: { type: 'object', properties: { path: pathProp }, required: ['path'] }, run: a => (sDelete(a.path), { ok: true }) },
+  { name: 'hub_changes', description: 'Paths of MEAL Hub documents changed or deleted since a timestamp, plus the total document count.', inputSchema: { type: 'object', properties: { since: { type: 'string' } } }, run: a => sChanges(a.since) },
+  { name: 'hub_import', description: 'Bulk-write MEAL Hub documents (used for the first copy of data).', inputSchema: { type: 'object', properties: { docs: { type: 'array', items: { type: 'object' } }, replace: { type: 'boolean' } }, required: ['docs'] }, run: a => sImport(a.docs, a.replace) },
+];
+async function mcp(req, res) {
+  const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'POST, GET, OPTIONS, DELETE' };
+  if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
+  if (req.method !== 'POST') { res.writeHead(405, Object.assign({ Allow: 'POST' }, cors)); return res.end(); }
+  const msg = await json(req);
+  const batch = Array.isArray(msg) ? msg : [msg];
+  const out = [];
+  for (const m of batch) {
+    if (m.id === undefined || m.id === null) continue; // notification
+    const reply = r => out.push(Object.assign({ jsonrpc: '2.0', id: m.id }, r));
+    try {
+      if (m.method === 'initialize') reply({ result: { protocolVersion: (m.params && m.params.protocolVersion) || '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'ohnez-meal-hub', version: '1.0.0' } } });
+      else if (m.method === 'ping') reply({ result: {} });
+      else if (m.method === 'tools/list') reply({ result: { tools: TOOLS.map(({ run, ...t }) => t) } });
+      else if (m.method === 'tools/call') {
+        const t = TOOLS.find(x => x.name === (m.params && m.params.name));
+        if (!t) reply({ error: { code: -32602, message: 'Unknown tool' } });
+        else {
+          try { const r = t.run((m.params && m.params.arguments) || {}); reply({ result: { content: [{ type: 'text', text: JSON.stringify(r) }], structuredContent: r } }); }
+          catch (e) { reply({ result: { isError: true, content: [{ type: 'text', text: e.message }] } }); }
+        }
+      } else reply({ error: { code: -32601, message: 'Method not found' } });
+    } catch (e) { reply({ error: { code: -32603, message: e.message } }); }
+  }
+  if (!out.length) { res.writeHead(202, cors); return res.end(); }
+  res.writeHead(200, Object.assign({ 'Content-Type': 'application/json' }, cors));
+  res.end(JSON.stringify(Array.isArray(msg) ? out : out[0]));
+}
+
 // ---------- routes ----------
 async function handle(req, res) {
   const url = new URL(req.url, 'http://x');
@@ -105,6 +188,7 @@ async function handle(req, res) {
   const secure = req.headers['x-forwarded-proto'] === 'https';
 
   if (p === '/healthz') return send(res, 200, 'ok');
+  if (MCP_TOKEN && p === '/mcp/' + MCP_TOKEN) return mcp(req, res);
   if (p === '/login' && m === 'GET') return page(res, 'login.html');
   if (p === '/shim.js') return page(res, 'shim.js');
   if (p === '/' && m === 'GET') return user ? page(res, 'app.html') : redirect(res, '/login');
@@ -178,48 +262,14 @@ async function handle(req, res) {
 
   // document store
   if (p === '/api/doc') {
-    if (m === 'GET') {
-      const dp = url.searchParams.get('path'); if (!validPath(dp, true)) return send(res, 400, { error: 'Bad path' });
-      const r = qGet.get(dp); return send(res, 200, r ? { exists: true, data: JSON.parse(r.data) } : { exists: false });
-    }
-    if (m === 'DELETE') {
-      if (needWrite()) return;
-      const dp = url.searchParams.get('path'); if (!validPath(dp, true)) return send(res, 400, { error: 'Bad path' });
-      qDel.run(dp); broadcast([dp]); return send(res, 200, { ok: true });
-    }
-    if (m === 'PUT' || m === 'PATCH') {
-      if (needWrite()) return;
-      const { path: dp, data } = await json(req);
-      if (!validPath(dp, true)) return send(res, 400, { error: 'Bad path' });
-      if (!isObj(data)) return send(res, 400, { error: 'Body must be an object' });
-      let body = data;
-      if (m === 'PATCH') { const r = qGet.get(dp); if (!r) return send(res, 400, { error: 'Document does not exist', code: 'invalid_argument' }); body = merge(JSON.parse(r.data), data); }
-      const s = JSON.stringify(body); if (s.length > 1024 * 1024) return send(res, 400, { error: 'Document too large' });
-      qPut.run(dp, collOf(dp), s, now()); broadcast([dp]); return send(res, 200, { ok: true });
-    }
+    if (m === 'GET') return send(res, 200, sGet(url.searchParams.get('path')));
+    if (m === 'DELETE') { if (needWrite()) return; sDelete(url.searchParams.get('path')); return send(res, 200, { ok: true }); }
+    if (m === 'PUT' || m === 'PATCH') { if (needWrite()) return; const { path: dp, data } = await json(req); sWrite(dp, data, m === 'PATCH'); return send(res, 200, { ok: true }); }
   }
-  if (p === '/api/query' && m === 'POST') {
-    const { coll, where = [], orderBy, dir = 'asc', limit } = await json(req);
-    if (!validPath(coll, false)) return send(res, 400, { error: 'Bad path' });
-    let docs = qColl.all(coll).map(r => ({ id: r.path.split('/').pop(), data: JSON.parse(r.data) }));
-    for (const w of where) { const f = OPS[w.op]; if (!f) return send(res, 400, { error: 'Bad operator' }); docs = docs.filter(d => d.data[w.field] !== undefined && f(d.data[w.field], w.value)); }
-    if (orderBy) docs.sort((x, y) => cmp(x.data[orderBy], y.data[orderBy]) * (dir === 'desc' ? -1 : 1));
-    else docs.sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
-    if (limit) docs = docs.slice(0, Number(limit));
-    return send(res, 200, { docs });
-  }
+  if (p === '/api/query' && m === 'POST') return send(res, 200, sQuery(await json(req)));
 
   // import / backup (admin)
-  if (p === '/api/import' && m === 'POST') {
-    if (needAdmin()) return;
-    const body = await json(req); const docs = body.docs;
-    if (!Array.isArray(docs) || !docs.length) return send(res, 400, { error: 'No records in file' });
-    if (docs.some(d => !d || !validPath(d.path, true) || !isObj(d.data))) return send(res, 400, { error: 'File has an invalid record' });
-    db.exec('BEGIN');
-    try { if (body.replace) db.exec('DELETE FROM docs'); for (const d of docs) qPut.run(d.path, collOf(d.path), JSON.stringify(d.data), now()); db.exec('COMMIT'); }
-    catch (e) { db.exec('ROLLBACK'); return send(res, 400, { error: e.message }); }
-    broadcast(['*']); return send(res, 200, { ok: true, imported: docs.length });
-  }
+  if (p === '/api/import' && m === 'POST') { if (needAdmin()) return; const b = await json(req); return send(res, 200, Object.assign({ ok: true }, sImport(b.docs, b.replace))); }
   if (p === '/api/export' && m === 'GET') {
     if (needAdmin()) return;
     const docs = db.prepare('SELECT path,data FROM docs ORDER BY path').all().map(r => ({ path: r.path, data: JSON.parse(r.data) }));
@@ -245,5 +295,5 @@ async function handle(req, res) {
 }
 
 http.createServer((req, res) => {
-  handle(req, res).catch(e => { console.error(e); if (!res.headersSent) send(res, e.status || 500, { error: e.status ? e.message : 'Server error' }); });
+  handle(req, res).catch(e => { if (!(e instanceof StoreError)) console.error(e); if (!res.headersSent) send(res, e.status || 500, { error: e.status ? e.message : 'Server error' }); });
 }).listen(PORT, () => console.log('OHNEZ MEAL Hub listening on', PORT, 'data in', DATA_DIR));

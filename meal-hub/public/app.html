@@ -1466,7 +1466,7 @@ function renderSide(){
    <div class="side-label">Workspace</div><nav class="nav" aria-label="Workspace"><a href="#/" ${!p?'aria-current="page"':''}>${ic('home')}All projects</a></nav>`;
   if(p){h+=`<div class="side-label">Project</div><div class="proj-pill"><b>${esc(p.name)}</b><span>${esc([p.location,p.period].filter(Boolean).join(' · '))}</span></div>
    <nav class="nav" aria-label="${esc(p.name)}">${NAVG.map(([g,ks])=>(g?`<div class="nav-g">${g}</div>`:'')+ks.map(k=>TABS.find(t=>t[0]===k)).filter(Boolean).map(([k,l])=>`<a href="#/${p.id}/${k}" ${S.tab===k?'aria-current="page"':''}>${ic(k)}${l}${badge[k]?`<span class="count" title="${k==='actions'?'overdue actions':k==='notify'?'weekly summary due':'indicators missing latest month'}">${badge[k]}</span>`:''}</a>`).join('')).join('')}</nav>`}
-  h+=`<div class="side-foot"><button type="button" id="refreshBtn" class="btn" onclick="refreshAll()" title="Reload the latest data saved by everyone">${ic('refresh')} Refresh data</button><button type="button" class="btn" onclick="exportAllData()" title="Download every record as one JSON file for the website version">Export all data</button><span id="refreshed" class="small muted"></span></div>`;
+  h+=`<div class="side-foot"><button type="button" id="refreshBtn" class="btn" onclick="refreshAll()" title="Reload the latest data saved by everyone">${ic('refresh')} Refresh data</button><button type="button" class="btn" onclick="exportAllData()" title="Download every record as one JSON file for the website version">Export all data</button>${hubMode==='website'?'<span class="small muted">Synced with the website</span>':''}<span id="refreshed" class="small muted"></span></div>`;
   document.getElementById('side').innerHTML=h;stampRefreshed();
 }
 function renderTop(){
@@ -3618,10 +3618,74 @@ function editCur(id,td){if(td.querySelector('input'))return;const i=S.ind.find(x
 /* ---------- boot ---------- */
 const dlg=document.getElementById('dlg');
 if(!location.hash){try{const r=localStorage.getItem('hub-route');if(r)history.replaceState(null,'',r)}catch(e){}}
+/* ---- Website link: when the "OHNEZ MEAL Hub" connector is connected, this page reads and writes
+   the website's database, so the Claude Hub and the website always show the same data. ---- */
+const HUB_SITE='OHNEZ MEAL Hub';
+let hubMode='claude';
+function hubPayload(r){
+  let p=r&&r.payload!==undefined?r.payload:r;
+  if(p&&p.structuredContent)p=p.structuredContent;
+  if(p&&Array.isArray(p.content)&&p.content[0]&&typeof p.content[0].text==='string'){try{p=JSON.parse(p.content[0].text)}catch(e){}}
+  if(typeof p==='string'){try{p=JSON.parse(p)}catch(e){}}
+  return p;
+}
+function hubRemoteDb(call){
+  const META=Object.freeze({fromCache:false,hasPendingWrites:false});
+  const snap=(id,ex,data)=>({id,exists:ex,data:()=>ex?data:undefined,metadata:META});
+  const rid=()=>{const a='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';let s='';for(const x of crypto.getRandomValues(new Uint8Array(20)))s+=a[x%62];return s};
+  const ls=new Set();const notify=ps=>ls.forEach(l=>l(ps));
+  let since=null;
+  (async function poll(){try{const r=await call('hub_changes',{since:since||new Date().toISOString()});if(since&&r.paths&&r.paths.length)notify(r.paths);since=r.now}catch(e){}setTimeout(poll,15000)})();
+  const err=e=>({code:(e&&e.code)||'unavailable',message:(e&&e.message)||String(e)});
+  function watch(pull){let alive=true,last=null;const go=()=>pull().then(([s,k])=>{if(alive&&k!==last){last=k;s.cb(s.v)}}).catch(()=>{});return{go,stop:()=>{alive=false}}}
+  function docRef(path){
+    const id=path.split('/').pop();
+    const r={id,path,
+      async get(){const j=await call('hub_get',{path});return snap(id,!!j.exists,j.data)},
+      async set(data){await call('hub_set',{path,data});notify([path])},
+      async update(data){await call('hub_update',{path,data});notify([path])},
+      async delete(){await call('hub_delete',{path});notify([path])},
+      async acquire(){return{acquired:true}},
+      collection(sub){return collRef(path+'/'+sub)},
+      onSnapshot(next){const w=watch(async()=>{const s=await r.get();return[{cb:next,v:s},JSON.stringify([s.exists,s.data()])]});
+        const l=ps=>{if(ps.includes('*')||ps.includes(path))w.go()};ls.add(l);w.go();return()=>{w.stop();ls.delete(l)}}};
+    return r}
+  function query(coll,where,orderBy,dir,lim){
+    const q={
+      where(f,op,v){return query(coll,where.concat([{field:f,op,value:v}]),orderBy,dir,lim)},
+      orderBy(f,d){return query(coll,where,f,d||'asc',lim)},
+      limit(n){return query(coll,where,orderBy,dir,n)},
+      async get(){const j=await call('hub_query',{coll,where,orderBy:orderBy||undefined,dir,limit:lim||undefined});const docs=(j.docs||[]).map(d=>snap(d.id,true,d.data));
+        return{docs,size:docs.length,empty:!docs.length,docChanges:()=>docs.map((doc,i)=>({type:'added',doc,oldIndex:-1,newIndex:i})),metadata:META}},
+      onSnapshot(next){const w=watch(async()=>{const s=await q.get();return[{cb:next,v:s},JSON.stringify(s.docs.map(d=>[d.id,d.data()]))]});
+        const l=ps=>{if(ps.includes('*')||ps.some(p=>p.split('/').slice(0,-1).join('/')===coll))w.go()};ls.add(l);w.go();return()=>{w.stop();ls.delete(l)}}};
+    return q}
+  function collRef(path){return Object.assign(query(path,[],null,'asc',null),{path,doc(id){return docRef(path+'/'+(id||rid()))},async add(data){const r=docRef(path+'/'+rid());await r.set(data);return r}})}
+  return Object.freeze({doc:docRef,collection:collRef});
+}
+async function hubLink(local){
+  let m=null;try{m=await claude.use('mcp')}catch(e){}
+  if(!m)return local;
+  const call=async(tool,args)=>{const p=hubPayload(await m.callTool(HUB_SITE,tool,args));if(p&&p.isError)throw{code:'tool_error',message:'Website error'};return p};
+  let st;try{st=await call('hub_changes',{since:'9999'})}catch(e){console.warn('MEAL Hub website not linked:',e);return local}
+  if(!st||typeof st.count!=='number')return local;
+  if(st.count===0&&local){
+    let ok=false;try{ok=user?await user.canEdit():false}catch(e){}
+    if(ok){
+      const names=['projects','hub','meta','visualizations','staff','notifications','checklists','trainings','indicators','actions','benchmarks','calendar','activities','frm','evidence','uploads','sources'];
+      const docs=[];for(const n of names){const s=await local.collection(n).get();s.docs.forEach(d=>docs.push({path:n+'/'+d.id,data:d.data()}))}
+      for(let i=0;i<docs.length;i+=40)await call('hub_import',{docs:docs.slice(i,i+40)});
+      setTimeout(()=>{try{toast('Copied '+docs.length+' records to the website. Both now share one dataset.')}catch(e){}},1500);
+    }
+  }
+  hubMode='website';
+  return hubRemoteDb(call);
+}
 render();
 (async()=>{
   if(!window.claude||!claude.use){render();return}
   [db,user,downloads,assets]=await Promise.all([claude.use('db'),claude.use('user'),claude.use('downloads'),claude.use('assets')]);
+  db=await hubLink(db);
   claude.use('mcp').then(m=>{mcp=m}).catch(()=>{});
   if(user){try{S.canEdit=await user.canEdit()}catch(e){}}
   if(!db){render();return}
