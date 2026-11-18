@@ -167,10 +167,11 @@ async function mcp(req, res) {
       else if (m.method === 'tools/list') reply({ result: { tools: TOOLS.map(({ run, ...t }) => t) } });
       else if (m.method === 'tools/call') {
         const t = TOOLS.find(x => x.name === (m.params && m.params.name));
+        console.log('mcp', m.params && m.params.name, JSON.stringify((m.params && m.params.arguments) || {}).slice(0, 120));
         if (!t) reply({ error: { code: -32602, message: 'Unknown tool' } });
         else {
           try { const r = t.run((m.params && m.params.arguments) || {}); reply({ result: { content: [{ type: 'text', text: JSON.stringify(r) }], structuredContent: r } }); }
-          catch (e) { reply({ result: { isError: true, content: [{ type: 'text', text: e.message }] } }); }
+          catch (e) { console.log('mcp error', e.message); reply({ result: { isError: true, content: [{ type: 'text', text: e.message }] } }); }
         }
       } else reply({ error: { code: -32601, message: 'Method not found' } });
     } catch (e) { reply({ error: { code: -32603, message: e.message } }); }
@@ -187,7 +188,7 @@ async function handle(req, res) {
   const user = currentUser(req);
   const secure = req.headers['x-forwarded-proto'] === 'https';
 
-  if (p === '/healthz') return send(res, 200, 'ok');
+  if (p === '/healthz') return send(res, 200, 'ok docs=' + db.prepare('SELECT count(*) n FROM docs').get().n + ' users=' + db.prepare('SELECT count(*) n FROM users').get().n);
   if (MCP_TOKEN && p === '/mcp/' + MCP_TOKEN) return mcp(req, res);
   if (p === '/login' && m === 'GET') return page(res, 'login.html');
   if (p === '/shim.js') return page(res, 'shim.js');
