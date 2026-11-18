@@ -3673,11 +3673,11 @@ async function hubLink(local){
   if(local){
     let ok=false;try{ok=user?await user.canEdit():false}catch(e){}
     if(ok){try{
-      const counts=await call('hub_counts',{})||{};const sy=await call('hub_get',{path:'hub/sync'})||{};
+      const sy0=await call('hub_get',{path:'hub/sync'})||{};const done0=new Set((sy0.exists&&sy0.data&&sy0.data.backfilled)||[]);const counts={};for(const n of HUB_SYNC_COLS){if(done0.has(n)){counts[n]=1;continue}try{const q=await call('hub_query',{coll:n,limit:1});counts[n]=(q&&q.docs||[]).length}catch(e){counts[n]=null}}const sy=await call('hub_get',{path:'hub/sync'})||{};
       const done=new Set((sy.exists&&sy.data&&sy.data.backfilled)||[]);let copied=0;const newly=[];
-      for(const n of HUB_SYNC_COLS){if(counts[n]||done.has(n))continue;const s=await local.collection(n).get();if(!s.size)continue;
+      for(const n of HUB_SYNC_COLS){if(counts[n]!==0||done.has(n))continue;const s=await local.collection(n).get();if(!s.size)continue;
         const docs=s.docs.map(d=>({path:n+'/'+d.id,data:d.data()}));for(let i=0;i<docs.length;i+=40)await call('hub_import',{docs:docs.slice(i,i+40)});copied+=docs.length;newly.push(n)}
-      const mark=[...new Set([...done,...HUB_SYNC_COLS.filter(n=>counts[n]),...newly])];
+      const mark=[...new Set([...done,...HUB_SYNC_COLS.filter(n=>counts[n]>0),...newly])];
       if(mark.length!==done.size)await call('hub_set',{path:'hub/sync',data:{backfilled:mark,at:new Date().toISOString()}});
       if(copied)setTimeout(()=>{try{toast('Copied '+copied+' records to the website. Both now share one dataset.')}catch(e){}},1500);
     }catch(e){console.warn('MEAL Hub backfill skipped:',e)}}
