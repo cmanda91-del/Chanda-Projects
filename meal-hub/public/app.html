@@ -4004,7 +4004,12 @@ const css=`
 :root{--ui-r:16px;--ui-sh:0 1px 2px rgba(16,42,67,.06),0 8px 24px rgba(16,42,67,.07);--ui-sh-h:0 4px 10px rgba(16,42,67,.08),0 16px 36px rgba(16,42,67,.12)}
 /* layout: remove the empty band under the menu */
 .app{grid-template-rows:auto 1fr!important;align-content:start}
-#side{align-self:start}
+#side{align-self:start;position:relative;z-index:25}
+.gnav{flex-wrap:wrap;row-gap:8px}
+.gdd{position:relative}
+.gmenu{z-index:60!important;max-height:calc(100vh - 140px);overflow:auto;box-shadow:0 16px 40px rgba(16,42,67,.22)!important;border-radius:14px!important}
+.gmenu a{white-space:nowrap}
+#view{position:relative;z-index:1}
 /* hero page header */
 #top .topbar{position:relative;overflow:hidden;align-items:center!important;padding:22px 26px;margin:0 0 20px!important;border-radius:20px;color:#fff;
   background:radial-gradient(900px 260px at 100% 0%,rgba(255,255,255,.18),transparent 60%),linear-gradient(120deg,#0f3d75,#1f6fc5 55%,#2aa3c7);box-shadow:0 12px 30px rgba(15,61,117,.22)}

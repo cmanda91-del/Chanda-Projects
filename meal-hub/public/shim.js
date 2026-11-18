@@ -111,18 +111,27 @@
   });
   startFeed();
 
-  // account bar
+  // account bar (sits in the header row)
+  const hs=document.createElement('style');hs.textContent='@media (max-width:900px){.d2bar .d2-proj,.d2bar .d2-tag{display:none!important}}.d2bar .d2-proj{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}';document.head.appendChild(hs);
   ready.then(u => {
     const bar = document.createElement('div');
-    bar.style.cssText = 'position:fixed;top:7px;right:104px;z-index:50;display:flex;gap:10px;align-items:center;font:13px Calibri,Carlito,Segoe UI,Arial,sans-serif;background:var(--surface,#fff);border:1px solid var(--line,#ddd);border-radius:999px;padding:5px 12px;box-shadow:0 1px 4px rgba(0,0,0,.08)';
+    bar.style.cssText = 'position:fixed;top:7px;right:104px;z-index:50;color:#1b2430;display:flex;gap:10px;align-items:center;font:13px Calibri,Carlito,Segoe UI,Arial,sans-serif;background:var(--surface,#fff);border:1px solid var(--line,#ddd);border-radius:999px;padding:5px 12px;box-shadow:0 1px 4px rgba(0,0,0,.08)';
     const roleTxt = { admin: 'Admin', editor: 'Editor', viewer: 'View only' }[u.role] || u.role;
     bar.innerHTML = '<span><b></b> · <span style="color:var(--ink-muted,#666)"></span></span>' +
       (u.role === 'admin' ? '<a href="/admin" style="color:var(--red-ink,#b3261e)">Users &amp; data</a>' : '') +
       '<a href="#" id="hubLogout" style="color:var(--red-ink,#b3261e)">Sign out</a>';
     bar.querySelector('b').textContent = u.name;
     bar.querySelector('span span').textContent = roleTxt;
-    const add = () => document.body.appendChild(bar);
-    document.body ? add() : document.addEventListener('DOMContentLoaded', add);
+    const add = () => {
+      const hb = document.querySelector('.d2bar');
+      if (hb) {
+        bar.style.position = 'static'; bar.style.boxShadow = 'none'; bar.style.marginLeft = 'auto'; bar.style.flex = 'none'; bar.style.whiteSpace = 'nowrap';
+        const g = hb.querySelector('.hubset-btn'), a = hb.querySelector('#d2appsBtn');
+        hb.insertBefore(bar, g || a || null); if (g) g.style.marginLeft = '8px';
+      } else document.body.appendChild(bar);
+    };
+    const tryAdd = () => (document.querySelector('.d2bar') ? add() : setTimeout(tryAdd, 200));
+    document.body ? tryAdd() : document.addEventListener('DOMContentLoaded', tryAdd);
     bar.querySelector('#hubLogout').onclick = async e => { e.preventDefault(); await fetch('/api/logout', { method: 'POST' }); location.href = '/login'; };
   }).catch(() => {});
 })();
