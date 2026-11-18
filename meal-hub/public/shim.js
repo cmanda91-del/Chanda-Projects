@@ -79,14 +79,18 @@
     });
   }
 
-  let me = null;
+  let me = null; const profCache = {};
   const ready = api('GET', '/api/me').then(u => { me = u; return u; });
   const canW = () => !!me && (me.role === 'admin' || me.role === 'editor');
   const db = Object.freeze({ doc: docRef, collection: collRef });
   const user = Object.freeze({
     async id() { await ready; return me ? String(me.id) : null; },
     async name() { await ready; return me ? me.name : null; },
-    async profiles(ids) { return api('GET', '/api/profiles?ids=' + encodeURIComponent((ids || []).join(','))); },
+    async profiles(ids) {
+      ids = (ids || []).map(String); const need = ids.filter(i => !(i in profCache));
+      if (need.length) { const r = await api('GET', '/api/profiles?ids=' + encodeURIComponent(need.join(','))); need.forEach(i => { profCache[i] = r[i] || (/^\d+$/.test(i) ? null : { name: 'Claude Hub' }); }); }
+      const out = {}; ids.forEach(i => { if (profCache[i]) out[i] = profCache[i]; }); return out;
+    },
     async canEdit() { await ready; return canW(); },
     async can(what) { await ready; return what === 'data.write' ? canW() : null; },
     async isOwner() { await ready; return !!me && me.role === 'admin'; },
