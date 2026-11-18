@@ -149,6 +149,7 @@ const TOOLS = [
   { name: 'hub_update', description: 'Merge fields into an existing MEAL Hub document.', inputSchema: { type: 'object', properties: { path: pathProp, data: objProp }, required: ['path', 'data'] }, run: a => (sWrite(a.path, a.data, true), { ok: true }) },
   { name: 'hub_delete', description: 'Delete a MEAL Hub document.', inputSchema: { type: 'object', properties: { path: pathProp }, required: ['path'] }, run: a => (sDelete(a.path), { ok: true }) },
   { name: 'hub_changes', description: 'Paths of MEAL Hub documents changed or deleted since a timestamp, plus the total document count.', inputSchema: { type: 'object', properties: { since: { type: 'string' } } }, run: a => sChanges(a.since) },
+  { name: 'hub_counts', description: 'Number of MEAL Hub documents in each collection.', inputSchema: { type: 'object', properties: {} }, run: () => Object.fromEntries(db.prepare('SELECT coll, count(*) n FROM docs GROUP BY coll').all().map(r => [r.coll, r.n])) },
   { name: 'hub_import', description: 'Bulk-write MEAL Hub documents (used for the first copy of data).', inputSchema: { type: 'object', properties: { docs: { type: 'array', items: { type: 'object' } }, replace: { type: 'boolean' } }, required: ['docs'] }, run: a => sImport(a.docs, a.replace) },
 ];
 async function mcp(req, res) {

@@ -1466,7 +1466,7 @@ function renderSide(){
    <div class="side-label">Workspace</div><nav class="nav" aria-label="Workspace"><a href="#/" ${!p?'aria-current="page"':''}>${ic('home')}All projects</a></nav>`;
   if(p){h+=`<div class="side-label">Project</div><div class="proj-pill"><b>${esc(p.name)}</b><span>${esc([p.location,p.period].filter(Boolean).join(' · '))}</span></div>
    <nav class="nav" aria-label="${esc(p.name)}">${NAVG.map(([g,ks])=>(g?`<div class="nav-g">${g}</div>`:'')+ks.map(k=>TABS.find(t=>t[0]===k)).filter(Boolean).map(([k,l])=>`<a href="#/${p.id}/${k}" ${S.tab===k?'aria-current="page"':''}>${ic(k)}${l}${badge[k]?`<span class="count" title="${k==='actions'?'overdue actions':k==='notify'?'weekly summary due':'indicators missing latest month'}">${badge[k]}</span>`:''}</a>`).join('')).join('')}</nav>`}
-  h+=`<div class="side-foot"><button type="button" id="refreshBtn" class="btn" onclick="refreshAll()" title="Reload the latest data saved by everyone">${ic('refresh')} Refresh data</button><button type="button" class="btn" onclick="exportAllData()" title="Download every record as one JSON file for the website version">Export all data</button>${hubMode==='website'?'<span class="small muted">Synced with the website</span>':''}<span id="refreshed" class="small muted"></span></div>`;
+  h+=`<div class="side-foot"><button type="button" id="refreshBtn" class="btn" onclick="refreshAll()" title="Reload the latest data saved by everyone">${ic('refresh')} Refresh data</button><button type="button" class="btn" onclick="exportAllData()" title="Download every record as one JSON file for the website version">Export all data</button><span id="refreshed" class="small muted"></span></div>`;
   document.getElementById('side').innerHTML=h;stampRefreshed();
 }
 function renderTop(){
@@ -1485,7 +1485,7 @@ function render(){
   if(!S.proj){v.innerHTML=S.loaded.projects?vHome():'<div class="empty">Loading projects…</div>';renderFoot();return}
   const ready=['indicators','actions','benchmarks','calendar','activities','frm','evidence'].every(k=>S.loaded[k]);
   if(!ready){v.innerHTML='<div class="empty">Loading project data…</div>';return}
-  const map={base:vBase,show:vShow,reach:vReach,viz:vViz,notify:vNotify,overview:vOverview,mealplan:vMealPlan,lf:vLogframe,sar:vSar,train:vTrainings,iptt:vIptt,actions:vActions,checks:vChecks,bm:vBm,frm:vFrm,cal:vCal,act:vAct,ev:vEv,sources:vSources};
+  const map=Object.assign({base:vBase,show:vShow,reach:vReach,viz:vViz,notify:vNotify,overview:vOverview,mealplan:vMealPlan,lf:vLogframe,sar:vSar,train:vTrainings,iptt:vIptt,actions:vActions,checks:vChecks,bm:vBm,frm:vFrm,cal:vCal,act:vAct,ev:vEv,sources:vSources},window.EXTRA_VIEWS||{});
   v.innerHTML=(S.canEdit?'':'<div class="banner">View only. You can browse all figures; entering data needs edit access from the workspace owner.</div>')+map[S.tab]();
   renderFoot();
 }
@@ -3621,6 +3621,7 @@ if(!location.hash){try{const r=localStorage.getItem('hub-route');if(r)history.re
 /* ---- Website link: when the "OHNEZ MEAL Hub" connector is connected, this page reads and writes
    the website's database, so the Claude Hub and the website always show the same data. ---- */
 const HUB_SITE='OHNEZ MEAL Hub';
+const HUB_SYNC_COLS=['projects','hub','meta','visualizations','datavalues','staff','notifications','checklists','trainings','indicators','actions','benchmarks','calendar','activities','frm','evidence','uploads','sources'];
 let hubMode='claude';
 function hubPayload(r){
   let p=r&&r.payload!==undefined?r.payload:r;
@@ -3669,14 +3670,17 @@ async function hubLink(local){
   const call=async(tool,args)=>{const p=hubPayload(await m.callTool(HUB_SITE,tool,args));if(p&&p.isError)throw{code:'tool_error',message:'Website error'};return p};
   let st;try{st=await call('hub_changes',{since:'9999'})}catch(e){console.warn('MEAL Hub website not linked:',e);return local}
   if(!st||typeof st.count!=='number')return local;
-  if(st.count===0&&local){
+  if(local){
     let ok=false;try{ok=user?await user.canEdit():false}catch(e){}
-    if(ok){
-      const names=['projects','hub','meta','visualizations','staff','notifications','checklists','trainings','indicators','actions','benchmarks','calendar','activities','frm','evidence','uploads','sources'];
-      const docs=[];for(const n of names){const s=await local.collection(n).get();s.docs.forEach(d=>docs.push({path:n+'/'+d.id,data:d.data()}))}
-      for(let i=0;i<docs.length;i+=40)await call('hub_import',{docs:docs.slice(i,i+40)});
-      setTimeout(()=>{try{toast('Copied '+docs.length+' records to the website. Both now share one dataset.')}catch(e){}},1500);
-    }
+    if(ok){try{
+      const counts=await call('hub_counts',{})||{};const sy=await call('hub_get',{path:'hub/sync'})||{};
+      const done=new Set((sy.exists&&sy.data&&sy.data.backfilled)||[]);let copied=0;const newly=[];
+      for(const n of HUB_SYNC_COLS){if(counts[n]||done.has(n))continue;const s=await local.collection(n).get();if(!s.size)continue;
+        const docs=s.docs.map(d=>({path:n+'/'+d.id,data:d.data()}));for(let i=0;i<docs.length;i+=40)await call('hub_import',{docs:docs.slice(i,i+40)});copied+=docs.length;newly.push(n)}
+      const mark=[...new Set([...done,...HUB_SYNC_COLS.filter(n=>counts[n]),...newly])];
+      if(mark.length!==done.size)await call('hub_set',{path:'hub/sync',data:{backfilled:mark,at:new Date().toISOString()}});
+      if(copied)setTimeout(()=>{try{toast('Copied '+copied+' records to the website. Both now share one dataset.')}catch(e){}},1500);
+    }catch(e){console.warn('MEAL Hub backfill skipped:',e)}}
   }
   hubMode='website';
   return hubRemoteDb(call);
@@ -3697,9 +3701,181 @@ render();
 })();
 </script>
 <script>
-async function exportAllData(){try{if(!db){alert('Data not loaded yet.');return}const names=['projects','hub','meta','visualizations','staff','notifications','checklists','trainings','indicators','actions','benchmarks','calendar','activities','frm','evidence','uploads','sources'];const docs=[];for(const n of names){const s=await db.collection(n).get();s.docs.forEach(d=>docs.push({path:n+'/'+d.id,data:d.data()}))}const out=JSON.stringify({exportedAt:new Date().toISOString(),docs});const name='OHNEZ_MEAL_Hub_export.json';if(downloads){await downloads.save({filename:name,data:out})}else{const u=URL.createObjectURL(new Blob([out],{type:'application/json'}));const l=document.createElement('a');l.href=u;l.download=name;l.click()}if(typeof toast==='function')toast('Exported '+docs.length+' records')}catch(e){alert('Export failed: '+((e&&e.message)||e))}}
+async function exportAllData(){try{if(!db){alert('Data not loaded yet.');return}const names=HUB_SYNC_COLS;const docs=[];for(const n of names){const s=await db.collection(n).get();s.docs.forEach(d=>docs.push({path:n+'/'+d.id,data:d.data()}))}const out=JSON.stringify({exportedAt:new Date().toISOString(),docs});const name='OHNEZ_MEAL_Hub_export.json';if(downloads){await downloads.save({filename:name,data:out})}else{const u=URL.createObjectURL(new Blob([out],{type:'application/json'}));const l=document.createElement('a');l.href=u;l.download=name;l.click()}if(typeof toast==='function')toast('Exported '+docs.length+' records')}catch(e){alert('Export failed: '+((e&&e.message)||e))}}
 /* Data Sources: add the GIS map layers card */
 const _vSources=vSources;vSources=function(){const h=_vSources();if((S.f.srcMode||'file')!=='file')return h;geoLoad();return h+vGeoSrc()};
 </script>
 
+<script>
+/* ---------- M&E registers: Data Quality (RDQA), Field Visits, Risks & Assumptions, Learning & Adaptation, Evaluations & Studies ---------- */
+(function(){
+const RES_OPTS=['','Result 1','Result 2','Result 3','Result 4','Cross-cutting'];
+const pct=v=>v===''||v===undefined||v===null||isNaN(+v)?null:+v;
+const avg=a=>{const x=a.filter(v=>v!==null);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
+const fmtP=v=>v===null?'–':Math.round(v)+'%';
+const toneP=v=>v===null?'none':v>=90?'good':v>=70?'warn':'bad';
+const isOpen=r=>!/^(Closed|Complete|Done|Retired)$/i.test(r.status||'');
+const overdue=r=>isOpen(r)&&r.due&&parse(r.due)<today();
+const curQ=()=>quarter(today());
+const tc=t=>'t-'+t;
+const chipT=(t,x)=>chip('t-'+t,x);
+const kpi=(tone,label,val,sub)=>`<div class="card kpi ${tone}"><div class="l"><span class="dot"></span>${label}</div><div class="v">${val}</div><div class="s">${sub||''}</div></div>`;
+const bar=(v,tone)=>`<div style="display:flex;align-items:center;gap:8px"><div style="flex:1;height:8px;border-radius:999px;background:var(--surface-sunk,#ebebe8);overflow:hidden"><div style="width:${Math.max(0,Math.min(100,v||0))}%;height:100%;background:var(--${tone==='good'?'good-ink':tone==='warn'?'warn-ink':tone==='bad'?'bad-ink':'none-bar'},#999);transition:width .6s ease"></div></div><span class="small nowrap" style="min-width:38px;text-align:right">${fmtP(v)}</span></div>`;
+
+/* register definitions */
+const REG={
+ dqa:{label:'Data Quality (RDQA)',col:'dqa',key:'dqa',prefix:'DQ',req:'facility',group:'Quality',after:'bm',
+  icon:'<path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M8.5 12l2.5 2.5 4.5-5"/>',
+  app:'RDQA scores by facility: completeness, timeliness, accuracy, consistency',
+  help:'Routine data quality assessments by facility and round. Scores ≥90% are green, 70–89% amber, below 70% red. Accuracy is the verification factor (recount ÷ reported) shown as a percentage.',
+  fields:[['round','Round','select',['Round 1','Round 2','Round 3','Round 4','Round 5','Round 6']],['date','Date assessed','date'],['facility','Facility','select',['',...HFS]],['area','Indicators / service area','text'],
+   ['completeness','Completeness %','number'],['timeliness','Timeliness %','number'],['accuracy','Accuracy (verification factor) %','number'],['consistency','Consistency %','number'],
+   ['issue','Main data quality issue','textarea'],['action','Action agreed','textarea'],['owner','Responsible','text'],['due','Due date','date'],['status','Status','select',['Open','In progress','Closed']]],
+  score:r=>avg(['completeness','timeliness','accuracy','consistency'].map(k=>pct(r[k])))},
+ visits:{label:'Field Monitoring Visits',col:'visits',key:'visits',prefix:'FV',req:'site',group:'Quality',after:'dqa',
+  icon:'<path d="M12 21s-7-6.2-7-11a7 7 0 0114 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>',
+  app:'Supervision, mentorship and joint monitoring visits with follow-up',
+  help:'Every monitoring, supervision or mentorship visit with its findings and the follow-up agreed. Facility coverage counts visits in the selected quarter.',
+  fields:[['date','Visit date','date'],['site','Facility / community','text','hfs'],['purpose','Purpose','select',['Supportive supervision','Data quality check (RDQA)','Technical mentorship','Joint monitoring (DHO/SC/THP)','Spot check','Community monitoring','Other']],['team','Team','text'],
+   ['findings','Key findings','textarea'],['recommendations','Recommendations','textarea'],['followup','Follow-up action','textarea'],['owner','Responsible','text'],['due','Follow-up due','date'],['status','Status','select',['Open','In progress','Closed']]]},
+ risks:{label:'Risks & Assumptions',col:'risks',key:'risks',prefix:'RK',req:'risk',group:'Plan',after:'lf',
+  icon:'<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/>',
+  app:'Risk register with likelihood × impact matrix and mitigation',
+  help:'Risks and logframe assumptions, scored likelihood × impact (1–5 each). 15 or more is high, 8–14 medium, below 8 low. Review high risks monthly.',
+  fields:[['risk','Risk / assumption','textarea'],['category','Category','select',['Programmatic','Operational','Data & MEAL','Safeguarding','Financial','Contextual (weather, access, health)','Partnership','Assumption (logframe)']],['result','Linked result','select',RES_OPTS],
+   ['likelihood','Likelihood (1–5)','select',['1','2','3','4','5']],['impact','Impact (1–5)','select',['1','2','3','4','5']],['mitigation','Mitigation / response','textarea'],['owner','Owner','text'],['review','Next review','date'],['status','Status','select',['Active','Watch','Closed']]],
+  score:r=>(+r.likelihood||0)*(+r.impact||0)},
+ learning:{label:'Learning & Adaptation',col:'learning',key:'learning',prefix:'LL',req:'title',group:'Learn & report',after:'train',
+  icon:'<path d="M12 3a6 6 0 00-3.5 10.9V17h7v-3.1A6 6 0 0012 3z"/><path d="M9.5 21h5"/>',
+  app:'Lessons learned, learning questions, adaptations and success stories',
+  help:'What the project is learning and how it adapts. Link each lesson to its evidence (SQA, RDQA, FRM, review meetings) and record the change it led to.',
+  fields:[['type','Type','select',['Lesson learned','Learning question','Adaptation','Success story','Good practice']],['date','Date','date'],['title','Title','text'],['source','Evidence source','select',['','Quarterly review meeting','SQA','RDQA / DQA','HFRA / baseline','Feedback (FRM)','Field monitoring visit','Training results','DHIS2 / IPTT trend','Other']],['result','Linked result','select',RES_OPTS],
+   ['detail','What we learned / the question','textarea'],['change','Change made / decision','textarea'],['owner','Owner','text'],['shared','Shared with','text'],['status','Status','select',['Open','Applied','Closed']]]},
+ evals:{label:'Evaluations & Studies',col:'evals',key:'evals',prefix:'EV',req:'name',group:'Learn & report',after:'learning',
+  icon:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M7 14h4M7 17h7"/>',
+  app:'Baseline, assessments, reviews and endline on one timeline',
+  help:'Every assessment, survey and evaluation in the project cycle, shown on a timeline. Mark each one complete and link its report.',
+  fields:[['name','Name','text'],['type','Type','select',['Baseline','Assessment (HFRA / SQA)','Data quality (RDQA)','Review','Midline','Endline / final evaluation','Survey','Study']],['start','Start','date'],['end','End','date'],['lead','Lead','text'],
+   ['status','Status','select',['Planned','In progress','Complete','Delayed','Cancelled']],['report','Report link or file name','text'],['findings','Key findings','textarea']]}
+};
+Object.entries(REG).forEach(([k,r])=>{
+  ICON[k]=r.icon;
+  const ai=TABS.findIndex(t=>t[0]===r.after);TABS.splice(ai>=0?ai+1:TABS.length,0,[k,r.label]);
+  const g=NAVGRP.find(x=>x[0]===r.group);if(g){const j=g[1].indexOf(r.after);g[1].splice(j>=0?j+1:g[1].length,0,k)}
+  TABHELP[k]=r.help;
+  try{APPS.push([k,r.label,r.app])}catch(e){}
+  COLS.push([r.col,r.key,(a,b)=>String(b.date||b.start||b.id||'').localeCompare(String(a.date||a.start||a.id||''))]);
+  S[r.key]=S[r.key]||[];
+  window.EXTRA_VIEWS=window.EXTRA_VIEWS||{};
+});
+HUB_SYNC_COLS.push(...Object.values(REG).map(r=>r.col));
+
+/* generic edit dialog */
+window.regEdit=function(k,id){
+  const r=REG[k];const list=S[r.key]||[];const o=id?list.find(x=>x.id===id):Object.assign({id:nextId(list,r.prefix),date:iso(today())},r.defaults||{});if(!o)return;
+  document.getElementById('dlgT').textContent=(id?r.label.replace(/s$/,'')+' ':'New entry ')+o.id;
+  const fld=([n,l,t,opts])=>{const v=o[n]??'';
+    if(t==='select')return `<label>${l}<select name="${n}" ${dis()}>${opt(opts.includes(String(v))?opts:[...opts,String(v)].filter((x,i,a)=>a.indexOf(x)===i),String(v)||opts[0])}</select></label>`;
+    if(t==='textarea')return `<label class="full">${l}<textarea name="${n}" ${dis()}>${esc(v)}</textarea></label>`;
+    if(t==='number')return `<label>${l}<input type="number" min="0" max="200" step="0.1" name="${n}" value="${esc(v)}" ${dis()}></label>`;
+    if(opts==='hfs')return `<label>${l}<input type="text" name="${n}" list="regHfs" value="${esc(v)}" ${dis()}><datalist id="regHfs">${HFS.map(x=>`<option value="${esc(x)}">`).join('')}</datalist></label>`;
+    return `<label>${l}<input type="${t}" name="${n}" value="${esc(v)}" ${dis()}></label>`};
+  document.getElementById('dlgB').innerHTML=`<div class="form" id="regf">${r.fields.map(fld).join('')}</div>`;
+  document.getElementById('dlgF').innerHTML=S.canEdit?`${id?`<button class="btn ghost" style="margin-right:auto" onclick="if(confirm('Delete ${o.id}?')){dlg.close();write(()=>db.doc(dp('${r.col}','${o.id}')).delete())}">Delete</button>`:''}<button class="btn" onclick="dlg.close()">Cancel</button><button class="btn primary" onclick="regSave('${k}','${o.id}')">Save</button>`:'<button class="btn" onclick="dlg.close()">Close</button>';
+  dlg.showModal()};
+window.regSave=function(k,id){const r=REG[k];const o=formData('#regf');if(!o[r.req]){alert('Please fill in: '+r.fields.find(f=>f[0]===r.req)[1]);return}
+  if(o.status&&/Closed|Complete|Applied/.test(o.status)&&!o.closedDate)o.closedDate=iso(today());
+  const prev=(S[r.key]||[]).find(x=>x.id===id)||{};o.id=id;dlg.close();write(()=>db.doc(dp(r.col,id)).set(Object.assign({},prev,o)))};
+const addBtn=(k,txt)=>S.canEdit?`<button class="btn primary" onclick="regEdit('${k}')">${ic('plus')} ${txt}</button>`:'';
+const emptyCard=(k,msg,txt)=>`<div class="card empty" style="padding:32px;text-align:center"><p style="margin:0 0 12px">${msg}</p>${addBtn(k,txt)}</div>`;
+const statusChip=s=>chipT(/Closed|Complete|Applied/.test(s||'')?'good':/Delayed|Overdue/.test(s||'')?'bad':/Progress|Watch/.test(s||'')?'warn':'none',s||'Open');
+const search=(k)=>`<input type="search" placeholder="Search…" aria-label="Search" value="${esc(S.f['q_'+k]||'')}" oninput="S.f['q_${k}']=this.value;clearTimeout(window._rq);window._rq=setTimeout(()=>{render();const e=document.querySelector('input[type=search]');if(e){e.focus();e.setSelectionRange(e.value.length,e.value.length)}},250)" style="min-width:200px">`;
+const match=(k,r)=>{const q=(S.f['q_'+k]||'').toLowerCase();return !q||JSON.stringify(r).toLowerCase().includes(q)};
+const rowClick=(k,id)=>`style="cursor:pointer" tabindex="0" onclick="regEdit('${k}','${id}')" onkeydown="if(event.key==='Enter')regEdit('${k}','${id}')"`;
+
+/* ---- Data Quality ---- */
+EXTRA_VIEWS.dqa=function(){
+  const L=S.dqa;if(!L.length)return emptyCard('dqa','No data quality assessments recorded yet. Add one row per facility per RDQA round.','Add RDQA result');
+  const rounds=[...new Set(L.map(x=>x.round).filter(Boolean))].sort();const sel=S.f.dqr&&rounds.includes(S.f.dqr)?S.f.dqr:rounds[rounds.length-1];
+  const R=L.filter(x=>x.round===sel);const D=['completeness','timeliness','accuracy','consistency'];const m=D.map(d=>avg(R.map(x=>pct(x[d]))));
+  const openA=L.filter(x=>isOpen(x)&&x.action).length,od=L.filter(overdue).length;
+  let h=`<div class="toolbar"><select aria-label="Round" onchange="S.f.dqr=this.value;render()">${rounds.map(r=>`<option ${r===sel?'selected':''}>${esc(r)}</option>`).join('')}</select><span class="grow small muted">${R.length} of 7 facilities assessed in ${esc(sel)}</span>${addBtn('dqa','Add RDQA result')}</div>
+  <div class="grid g-kpi" style="margin-bottom:24px">${D.map((d,i)=>kpi(toneP(m[i]),d[0].toUpperCase()+d.slice(1),fmtP(m[i]),'Average across facilities')).join('')}${kpi(od?'bad':openA?'warn':'good','Open DQ actions',openA,od?`<b>${od} overdue</b>`:'None overdue')}</div>
+  <div class="card" style="margin-bottom:24px;padding:16px"><h3 style="margin:0 0 12px">Facility scores · ${esc(sel)}</h3><div class="tw"><table><thead><tr><th>Facility</th>${D.map(d=>`<th style="min-width:130px">${d[0].toUpperCase()+d.slice(1)}</th>`).join('')}<th>Overall</th></tr></thead><tbody>`;
+  [...R].sort((a,b)=>(REG.dqa.score(b)||0)-(REG.dqa.score(a)||0)).forEach(x=>{const o=REG.dqa.score(x);h+=`<tr ${rowClick('dqa',x.id)}><td><b>${esc(x.facility)}</b><div class="small muted">${esc(x.area||'')}</div></td>${D.map(d=>`<td>${bar(pct(x[d]),toneP(pct(x[d])))}</td>`).join('')}<td>${chipT(toneP(o),fmtP(o))}</td></tr>`});
+  h+=`</tbody></table></div></div>`;
+  if(rounds.length>1){h+=`<div class="card" style="margin-bottom:24px;padding:16px"><h3 style="margin:0 0 12px">Trend across rounds (average overall score)</h3><div style="display:flex;align-items:flex-end;gap:16px;height:150px">`;
+    rounds.forEach(rd=>{const v=avg(L.filter(x=>x.round===rd).map(REG.dqa.score));h+=`<div style="flex:1;text-align:center"><div class="small"><b>${fmtP(v)}</b></div><div style="height:${Math.round((v||0)*1.1)}px;background:var(--${toneP(v)==='good'?'good-ink':toneP(v)==='warn'?'warn-ink':'bad-ink'});border-radius:4px 4px 0 0;opacity:.8;transition:height .6s"></div><div class="small muted">${esc(rd)}</div></div>`});h+=`</div></div>`}
+  h+=`<h3>Issues and actions</h3><div class="tw"><table><thead><tr><th>Ref</th><th>Round</th><th>Facility</th><th style="min-width:220px">Issue</th><th style="min-width:200px">Action</th><th>Responsible</th><th>Due</th><th>Status</th></tr></thead><tbody>`;
+  L.filter(x=>x.issue||x.action).filter(x=>match('dqa',x)).forEach(x=>{h+=`<tr ${rowClick('dqa',x.id)}><td class="nowrap">${esc(x.id)}</td><td>${esc(x.round)}</td><td>${esc(x.facility)}</td><td class="small">${esc(x.issue)}</td><td class="small">${esc(x.action)}</td><td class="small">${esc(x.owner)}</td><td class="nowrap ${overdue(x)?'bad-t':''}">${esc(x.due||'')}${overdue(x)?' ⚠':''}</td><td>${statusChip(x.status)}</td></tr>`});
+  return h+`</tbody></table></div>`};
+
+/* ---- Field visits ---- */
+EXTRA_VIEWS.visits=function(){
+  const L=S.visits;if(!L.length)return emptyCard('visits','No monitoring visits logged yet.','Log a visit');
+  const qs=[...new Set(L.filter(v=>v.date).map(v=>quarter(parse(v.date))))];if(!qs.includes(curQ()))qs.push(curQ());qs.sort();const sel=S.f.vq||curQ();
+  const Q=L.filter(v=>v.date&&quarter(parse(v.date))===sel);const fac=HFS.filter(f=>!/Other/.test(f));
+  const cov=fac.map(f=>[f,Q.filter(v=>(v.site||'').toLowerCase().includes(f.toLowerCase().split(' ')[0])).length]);const covered=cov.filter(c=>c[1]).length;
+  const open=L.filter(v=>isOpen(v)&&v.followup).length,od=L.filter(overdue).length;const mx=Math.max(1,...cov.map(c=>c[1]));
+  let h=`<div class="toolbar"><select aria-label="Quarter" onchange="S.f.vq=this.value;render()">${qs.map(q=>`<option ${q===sel?'selected':''}>${q}</option>`).join('')}</select>${search('visits')}<span class="grow"></span>${addBtn('visits','Log a visit')}</div>
+  <div class="grid g-kpi" style="margin-bottom:24px">${kpi('none','Visits this quarter',Q.length,[...new Set(Q.map(v=>v.purpose))].filter(Boolean).length+' visit types')}${kpi(covered>=fac.length?'good':covered>=5?'warn':'bad','Facilities covered',covered+' / '+fac.length,'Each OHNEZ facility visited this quarter')}${kpi(od?'bad':open?'warn':'good','Open follow-ups',open,od?`<b>${od} overdue</b>`:'None overdue')}</div>
+  <div class="card" style="margin-bottom:24px;padding:16px"><h3 style="margin:0 0 12px">Visits per facility · ${sel}</h3>${cov.map(([f,n])=>`<div style="display:grid;grid-template-columns:200px 1fr 30px;gap:10px;align-items:center;margin:6px 0"><span class="small">${esc(f)}</span><div style="height:12px;border-radius:999px;background:var(--surface-sunk,#eee);overflow:hidden"><div style="height:100%;width:${n/mx*100}%;background:${n?'var(--good-ink)':'transparent'};transition:width .6s"></div></div><b class="small">${n}</b></div>`).join('')}</div>
+  <div class="tw"><table><thead><tr><th>Ref</th><th>Date</th><th>Site</th><th>Purpose</th><th style="min-width:220px">Key findings</th><th style="min-width:200px">Follow-up</th><th>Due</th><th>Status</th></tr></thead><tbody>`;
+  L.filter(v=>match('visits',v)).forEach(v=>{h+=`<tr ${rowClick('visits',v.id)}><td class="nowrap">${esc(v.id)}</td><td class="nowrap">${esc(v.date)}</td><td>${esc(v.site)}</td><td class="small">${esc(v.purpose)}</td><td class="small">${esc(v.findings)}</td><td class="small">${esc(v.followup)}</td><td class="nowrap">${esc(v.due||'')}${overdue(v)?' ⚠':''}</td><td>${statusChip(v.status)}</td></tr>`});
+  return h+`</tbody></table></div>`};
+
+/* ---- Risks ---- */
+EXTRA_VIEWS.risks=function(){
+  const L=S.risks;if(!L.length)return emptyCard('risks','No risks or assumptions recorded yet. Start with the logframe assumptions and the risks raised at review meetings.','Add a risk');
+  const A=L.filter(r=>r.status!=='Closed');const sc=REG.risks.score;const lvl=s=>s>=15?'bad':s>=8?'warn':'good';
+  const hi=A.filter(r=>sc(r)>=15).length,me=A.filter(r=>sc(r)>=8&&sc(r)<15).length,lo=A.filter(r=>sc(r)<8).length;const due=A.filter(r=>r.review&&parse(r.review)<today()).length;
+  let h=`<div class="toolbar">${search('risks')}<span class="grow"></span>${addBtn('risks','Add a risk')}</div><div class="grid g-kpi" style="margin-bottom:24px">${kpi(hi?'bad':'good','High (≥15)',hi,'Active risks')}${kpi(me?'warn':'good','Medium (8–14)',me,'Active risks')}${kpi('good','Low (<8)',lo,'Active risks')}${kpi(due?'warn':'good','Reviews overdue',due,'Past their review date')}</div>
+  <div class="card" style="margin-bottom:24px;padding:16px"><h3 style="margin:0 0 12px">Risk matrix (active)</h3><div style="display:grid;grid-template-columns:auto repeat(5,minmax(52px,1fr));gap:4px;max-width:560px">`;
+  for(let li=5;li>=1;li--){h+=`<div class="small muted" style="align-self:center;padding-right:6px">${li===5?'Likelihood 5':li}</div>`;for(let im=1;im<=5;im++){const cell=A.filter(r=>+r.likelihood===li&&+r.impact===im);const s=li*im;
+    h+=`<div title="${cell.map(r=>esc(r.id+': '+r.risk)).join('\n')}" style="aspect-ratio:1.4;border-radius:6px;display:grid;place-items:center;font-weight:700;background:var(--${lvl(s)}-bg);color:var(--${lvl(s)}-ink);${cell.length?'box-shadow:inset 0 0 0 2px currentColor':''}">${cell.length||''}</div>`}}
+  h+=`<div></div>${[1,2,3,4,5].map(i=>`<div class="small muted" style="text-align:center">${i===1?'Impact 1':i}</div>`).join('')}</div></div>
+  <div class="tw"><table><thead><tr><th>Ref</th><th style="min-width:240px">Risk / assumption</th><th>Category</th><th>Result</th><th>Score</th><th style="min-width:220px">Mitigation</th><th>Owner</th><th>Review</th><th>Status</th></tr></thead><tbody>`;
+  [...L].sort((a,b)=>sc(b)-sc(a)).filter(r=>match('risks',r)).forEach(r=>{const s=sc(r);h+=`<tr ${rowClick('risks',r.id)}><td class="nowrap">${esc(r.id)}</td><td>${esc(r.risk)}</td><td class="small">${esc(r.category)}</td><td class="small">${esc(r.result)}</td><td>${chipT(lvl(s),s+' · L'+(r.likelihood||'?')+'×I'+(r.impact||'?'))}</td><td class="small">${esc(r.mitigation)}</td><td class="small">${esc(r.owner)}</td><td class="nowrap">${esc(r.review||'')}</td><td>${statusChip(r.status||'Active')}</td></tr>`});
+  return h+`</tbody></table></div>`};
+
+/* ---- Learning ---- */
+EXTRA_VIEWS.learning=function(){
+  const L=S.learning;if(!L.length)return emptyCard('learning','No lessons or adaptations recorded yet. Capture what came out of the last review meeting, SQA or RDQA.','Add a lesson');
+  const T=['Lesson learned','Learning question','Adaptation','Success story','Good practice'];const ft=S.f.lt||'';
+  let h=`<div class="toolbar"><select aria-label="Type" onchange="S.f.lt=this.value;render()"><option value="">All types</option>${T.map(t=>`<option ${t===ft?'selected':''}>${t}</option>`).join('')}</select>${search('learning')}<span class="grow"></span>${addBtn('learning','Add a lesson')}</div>
+  <div class="grid g-kpi" style="margin-bottom:24px">${T.slice(0,4).map(t=>kpi('none',{'Lesson learned':'Lessons learned','Learning question':'Learning questions','Adaptation':'Adaptations','Success story':'Success stories'}[t],L.filter(x=>x.type===t).length,t==='Adaptation'?L.filter(x=>x.type===t&&x.status==='Applied').length+' applied':t==='Learning question'?L.filter(x=>x.type===t&&x.status!=='Closed').length+' still open':'')).join('')}</div>
+  <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px">`;
+  L.filter(x=>!ft||x.type===ft).filter(x=>match('learning',x)).forEach(x=>{h+=`<article class="card" tabindex="0" onclick="regEdit('learning','${x.id}')" onkeydown="if(event.key==='Enter')regEdit('learning','${x.id}')" style="cursor:pointer;padding:16px;display:flex;flex-direction:column;gap:8px;transition:transform .15s,box-shadow .15s" onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform=''">
+    <div style="display:flex;gap:6px;flex-wrap:wrap">${chipT('none',x.type||'Lesson')}${x.result?chipT('none',x.result):''}${statusChip(x.status)}</div><b style="font-size:16px">${esc(x.title)}</b><div class="small">${esc(x.detail)}</div>${x.change?`<div class="small" style="border-left:3px solid var(--good-ink);padding-left:8px"><b>Change made:</b> ${esc(x.change)}</div>`:''}<div class="small muted" style="margin-top:auto">${esc(x.date||'')}${x.source?' · '+esc(x.source):''}${x.owner?' · '+esc(x.owner):''}</div></article>`});
+  return h+`</div>`};
+
+/* ---- Evaluations ---- */
+EXTRA_VIEWS.evals=function(){
+  const L=S.evals;const seed=S.canEdit&&!L.length?`<button class="btn" onclick="regSeedEvals()">Add the standard OHNEZ schedule</button>`:'';
+  if(!L.length)return `<div class="card empty" style="padding:32px;text-align:center"><p style="margin:0 0 12px">No evaluations or studies on the timeline yet.</p>${addBtn('evals','Add a study')} ${seed}</div>`;
+  const ds=L.flatMap(x=>[x.start,x.end].filter(Boolean).map(parse));const mn=new Date(Math.min(...ds,today())),mxd=new Date(Math.max(...ds,today()));mn.setDate(1);mxd.setMonth(mxd.getMonth()+1,1);
+  const span=mxd-mn||1;const X=d=>((parse(d)-mn)/span*100);const months=[];for(let d=new Date(mn);d<mxd;d.setMonth(d.getMonth()+1))months.push(new Date(d));
+  const col=s=>s==='Complete'?'var(--good-ink)':s==='Delayed'?'var(--bad-ink)':s==='In progress'?'var(--warn-ink)':'var(--line-strong,#888)';
+  const c=s=>L.filter(x=>x.status===s).length;
+  let h=`<div class="toolbar"><span class="grow small muted">Bars run from start to end date. The vertical line marks today.</span>${addBtn('evals','Add a study')}</div>
+  <div class="grid g-kpi" style="margin-bottom:24px">${kpi('good','Complete',c('Complete'),'')}${kpi('warn','In progress',c('In progress'),'')}${kpi('none','Planned',c('Planned'),'')}${kpi(c('Delayed')?'bad':'good','Delayed',c('Delayed'),'')}</div>
+  <div class="card" style="padding:16px;overflow-x:auto"><div style="min-width:720px;position:relative">
+   <div style="display:grid;grid-template-columns:220px 1fr;font-size:11px" class="muted"><span></span><div style="position:relative;height:18px">${months.map(m=>`<span style="position:absolute;left:${X(iso(m))}%">${m.toLocaleString('en-GB',{month:'short'})}${m.getMonth()===0?' '+m.getFullYear():''}</span>`).join('')}</div></div>`;
+  [...L].sort((a,b)=>String(a.start).localeCompare(String(b.start))).forEach(x=>{const s=x.start||x.end,e=x.end||x.start;const l=s?X(s):0,w=s?Math.max(1.2,X(e)-X(s)):0;
+    h+=`<div style="display:grid;grid-template-columns:220px 1fr;align-items:center;min-height:34px;border-top:1px solid var(--line)" ${rowClick('evals',x.id)}><div class="small"><b>${esc(x.name)}</b><div class="muted">${esc(x.type||'')}</div></div><div style="position:relative;height:22px">${s?`<div title="${esc(x.start)} → ${esc(x.end)}" style="position:absolute;left:${l}%;width:${w}%;top:3px;bottom:3px;border-radius:6px;background:${col(x.status)};opacity:.85"></div>`:''}</div></div>`});
+  h+=`<div style="position:absolute;top:18px;bottom:0;left:calc(220px + (100% - 220px) * ${X(iso(today()))/100});width:2px;background:var(--sci-red,#da291c)"></div></div></div>
+  <div class="tw" style="margin-top:24px"><table><thead><tr><th>Ref</th><th>Name</th><th>Type</th><th>Dates</th><th>Lead</th><th>Status</th><th style="min-width:240px">Key findings</th><th>Report</th></tr></thead><tbody>`;
+  L.forEach(x=>{h+=`<tr ${rowClick('evals',x.id)}><td class="nowrap">${esc(x.id)}</td><td><b>${esc(x.name)}</b></td><td class="small">${esc(x.type)}</td><td class="nowrap small">${esc(x.start||'')} → ${esc(x.end||'')}</td><td class="small">${esc(x.lead)}</td><td>${statusChip(x.status)}</td><td class="small">${esc(x.findings)}</td><td class="small">${esc(x.report)}</td></tr>`});
+  return h+`</tbody></table></div>`};
+window.regSeedEvals=function(){
+  const rows=[['Health Facility Rapid Assessment (baseline)','Baseline','2026-03-01','2026-03-31','Complete'],['DHIS2 service-delivery baseline (Jan–Dec 2025)','Baseline','2026-07-01','2026-07-31','Complete'],
+   ['RDQA Round 1','Data quality (RDQA)','2026-06-01','2026-07-15','Complete'],['Service Quality Assessment Round 1','Assessment (HFRA / SQA)','2026-07-01','2026-07-31','Complete'],
+   ['Annual report (Year 1)','Review','2026-11-01','2027-02-28','In progress'],['Endline evaluation','Endline / final evaluation','','','Planned']];
+  write(async()=>{for(let i=0;i<rows.length;i++){const [name,type,start,end,status]=rows[i];const id='EV-'+String(i+1).padStart(3,'0');await db.doc(dp('evals',id)).set({id,name,type,start,end,status,lead:'MEAL Officer'})}toast('Added the standard schedule – check dates and leads.')})};
+
+/* show the shared-data status in the page footer */
+const _rf=renderFoot;renderFoot=async function(){await _rf();try{if(typeof hubMode!=='undefined'&&hubMode==='website'){const el=document.getElementById('foot');if(el&&!/Synced/.test(el.textContent))el.textContent+=(el.textContent?' · ':'')+'Synced with the website'}}catch(e){}};
+})();
+
+</script>
 </body></html>
