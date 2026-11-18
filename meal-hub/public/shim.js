@@ -114,7 +114,7 @@
   // account bar
   ready.then(u => {
     const bar = document.createElement('div');
-    bar.style.cssText = 'position:fixed;top:10px;right:14px;z-index:50;display:flex;gap:10px;align-items:center;font:13px Calibri,Carlito,Segoe UI,Arial,sans-serif;background:var(--surface,#fff);border:1px solid var(--line,#ddd);border-radius:999px;padding:5px 12px;box-shadow:0 1px 4px rgba(0,0,0,.08)';
+    bar.style.cssText = 'position:fixed;top:7px;right:104px;z-index:50;display:flex;gap:10px;align-items:center;font:13px Calibri,Carlito,Segoe UI,Arial,sans-serif;background:var(--surface,#fff);border:1px solid var(--line,#ddd);border-radius:999px;padding:5px 12px;box-shadow:0 1px 4px rgba(0,0,0,.08)';
     const roleTxt = { admin: 'Admin', editor: 'Editor', viewer: 'View only' }[u.role] || u.role;
     bar.innerHTML = '<span><b></b> · <span style="color:var(--ink-muted,#666)"></span></span>' +
       (u.role === 'admin' ? '<a href="/admin" style="color:var(--red-ink,#b3261e)">Users &amp; data</a>' : '') +
