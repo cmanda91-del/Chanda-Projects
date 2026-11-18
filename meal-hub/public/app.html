@@ -1774,7 +1774,7 @@ const REL=[['LAST_MONTH','Last month'],['LAST_3_MONTHS','Last 3 months'],['LAST_
 const rng=(a,b)=>{const o=[];for(let k=Math.max(1,a);k<=b;k++)o.push(k);return o};
 function dvInit(){if(S.dv)return;S.dv={type:'pivot',cols:['pe'],rows:['dx'],filters:['ou'],dx:['i:G-01','i:G-02','i:G-03','i:G-04','i:R1-08'],pe:['MONTHS_THIS_YEAR'],ou:['LUM'],legend:true,hideEmpty:false,name:'',id:null}}
 function districtName(){return String((S.proj&&S.proj.location)||'District').split(',')[0].trim()}
-function facilities(){const f=new Set();(S.dvals||[]).forEach(d=>Object.keys(d.values||{}).forEach(k=>f.add(k)));const rank=n=>/hospital/i.test(n)?0:/rural health|rhc/i.test(n)?1:2;return [...f].sort((a,b)=>rank(a)-rank(b)||a.localeCompare(b))}
+function facilities(){const f=new Set(typeof FAC_GEO!=='undefined'?Object.keys(FAC_GEO):[]);(S.dvals||[]).forEach(d=>Object.keys(d.values||{}).forEach(k=>f.add(k)));const rank=n=>/hospital/i.test(n)?0:/rural health|rhc/i.test(n)?1:2;return [...f].sort((a,b)=>rank(a)-rank(b)||a.localeCompare(b))}
 const ouName=id=>id==='LUM'?districtName():id.replace(/^F:/,'');
 function lastM(){let m=0;(S.dvals||[]).forEach(d=>Object.values(d.values||{}).forEach(o=>Object.keys(o).forEach(k=>{if(+k>m)m=+k})));S.ind.forEach(i=>{for(let k=12;k>m;k--)if(num((i.actuals||{})[k])!==null){m=k;break}});return Math.min(12,Math.max(1,m||periodMonth()))}
 function peExpand(id){const lm=lastM(),q=Math.ceil(lm/3);
