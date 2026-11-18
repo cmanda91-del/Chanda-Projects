@@ -3636,7 +3636,10 @@ function hubRemoteDb(call){
   const rid=()=>{const a='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';let s='';for(const x of crypto.getRandomValues(new Uint8Array(20)))s+=a[x%62];return s};
   const ls=new Set();const notify=ps=>ls.forEach(l=>l(ps));
   let since=null;
-  (async function poll(){try{const r=await call('hub_changes',{since:since||new Date().toISOString()});if(since&&r.paths&&r.paths.length)notify(r.paths);since=r.now}catch(e){}setTimeout(poll,15000)})();
+  let busy=false,timer=null;
+  const poll=async()=>{if(busy)return;busy=true;clearTimeout(timer);try{const r=await call('hub_changes',{since:since||new Date().toISOString()});if(since&&r.paths&&r.paths.length)notify(r.paths);since=r.now}catch(e){}busy=false;timer=setTimeout(poll,document.hidden?30000:2500)};
+  window.hubPollNow=poll;poll();
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});addEventListener('focus',()=>poll());
   const err=e=>({code:(e&&e.code)||'unavailable',message:(e&&e.message)||String(e)});
   function watch(pull){let alive=true,last=null;const go=()=>pull().then(([s,k])=>{if(alive&&k!==last){last=k;s.cb(s.v)}}).catch(()=>{});return{go,stop:()=>{alive=false}}}
   function docRef(path){
