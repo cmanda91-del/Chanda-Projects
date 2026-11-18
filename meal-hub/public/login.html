@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in · OHNEZ MEAL Hub</title>
+<style>
+:root{--red:#da291c;--ink:#141414;--muted:#595959;--line:#e2e2de;--page:#f4f4f2}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--page);color:var(--ink);font:15px/1.45 Calibri,Carlito,"Segoe UI",Arial,sans-serif}
+.card{width:min(380px,92vw);background:#fff;border:1px solid var(--line);border-radius:8px;padding:32px 28px;box-shadow:0 4px 16px rgba(0,0,0,.05)}
+.brand{display:flex;gap:10px;align-items:center;margin-bottom:22px}.mark{width:34px;height:34px;border-radius:4px;background:var(--red);display:grid;grid-template-columns:1fr 1fr;gap:3px;padding:7px}.mark i{background:#fff;border-radius:1px}.mark i:nth-child(2),.mark i:nth-child(3){opacity:.55}
+h1{font-size:20px;margin:0;line-height:1.1}.sub{font-size:13px;color:var(--muted)}
+label{display:block;font-weight:700;font-size:13px;margin:14px 0 4px}input{width:100%;padding:10px 12px;border:1px solid #999;border-radius:4px;font:inherit}
+input:focus{outline:2px solid #000;outline-offset:1px}
+button{margin-top:20px;width:100%;padding:11px;border:0;border-radius:4px;background:var(--red);color:#fff;font:inherit;font-weight:700;cursor:pointer}
+.err{color:#b3261e;font-size:13px;min-height:18px;margin-top:10px}.foot{font-size:12px;color:var(--muted);margin-top:18px}
+</style></head><body>
+<form class="card" id="f">
+  <div class="brand"><div class="mark"><i></i><i></i><i></i><i></i></div><div><h1>OHNEZ MEAL Hub</h1><div class="sub">Save the Children · The Hunger Project</div></div></div>
+  <label for="u">Username</label><input id="u" autocomplete="username" required autofocus>
+  <label for="p">Password</label><input id="p" type="password" autocomplete="current-password" required>
+  <button>Sign in</button>
+  <div class="err" id="e" role="alert"></div>
+  <div class="foot">No account? Ask the MEAL Officer to add you.</div>
+</form>
+<script>
+document.getElementById('f').onsubmit=async e=>{e.preventDefault();const er=document.getElementById('e');er.textContent='';
+const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u.value,password:p.value})});
+if(r.ok)location.href='/';else er.textContent=(await r.json().catch(()=>({}))).error||'Sign-in failed'};
+</script></body></html>

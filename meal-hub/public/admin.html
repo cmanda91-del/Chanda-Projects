@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Users &amp; data · OHNEZ MEAL Hub</title>
+<style>
+:root{--red:#da291c;--ink:#141414;--muted:#595959;--line:#e2e2de;--page:#f4f4f2}
+*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:15px/1.45 Calibri,Carlito,"Segoe UI",Arial,sans-serif}
+main{max-width:920px;margin:0 auto;padding:28px 20px 60px}a{color:#b3261e}
+h1{font-size:28px;margin:6px 0 20px}h2{font-size:18px;margin:0 0 12px}
+.card{background:#fff;border:1px solid var(--line);border-radius:8px;padding:20px;margin-bottom:20px}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line)}th{background:#f2f2f2}
+input,select{font:inherit;padding:7px 9px;border:1px solid #999;border-radius:4px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:end}.row label{display:flex;flex-direction:column;font-size:12px;font-weight:700;gap:3px}
+.btn{font:inherit;font-weight:700;padding:8px 14px;border-radius:4px;border:1px solid #7f7f7f;background:#fff;cursor:pointer}.btn.red{background:var(--red);border-color:var(--red);color:#fff}
+.msg{font-size:13px;margin-top:10px;min-height:18px}.muted{color:var(--muted);font-size:13px}
+</style></head><body><main>
+<a href="/">← Back to the Hub</a>
+<h1>Users &amp; data</h1>
+
+<section class="card">
+  <h2>People who can sign in</h2>
+  <p class="muted">Admin: everything, including this page. Editor: can change data. View only: can look but not change anything.</p>
+  <table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>New password</th><th></th></tr></thead><tbody id="ul"></tbody></table>
+  <h2 style="margin-top:22px">Add a person</h2>
+  <form class="row" id="nf">
+    <label>Full name<input name="name" required></label>
+    <label>Username<input name="username" required></label>
+    <label>Password (8+ characters)<input name="password" required minlength="8"></label>
+    <label>Role<select name="role"><option value="viewer">View only</option><option value="editor">Editor</option><option value="admin">Admin</option></select></label>
+    <button class="btn red">Add</button>
+  </form>
+  <div class="msg" id="um"></div>
+</section>
+
+<section class="card">
+  <h2>Import data</h2>
+  <p class="muted">Choose the JSON file from <b>Export all data</b> in the Claude version of the Hub (or a backup from below). Records with the same ID are overwritten.</p>
+  <div class="row"><input type="file" id="imf" accept=".json,application/json"><label style="flex-direction:row;align-items:center;font-weight:400"><input type="checkbox" id="rep"> Wipe existing data first</label><button class="btn red" id="imb">Import</button></div>
+  <div class="msg" id="im"></div>
+</section>
+
+<section class="card">
+  <h2>Backup</h2>
+  <p class="muted">Download everything in the Hub as one JSON file.</p>
+  <a class="btn" href="/api/export">Download backup</a>
+</section>
+
+<section class="card">
+  <h2>My password</h2>
+  <form class="row" id="pf"><label>Current<input type="password" name="current" required></label><label>New (8+ characters)<input type="password" name="next" required minlength="8"></label><button class="btn">Change</button></form>
+  <div class="msg" id="pm"></div>
+</section>
+</main>
+<script>
+const $=s=>document.querySelector(s);const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function j(m,u,b){const r=await fetch(u,{method:m,headers:b?{'Content-Type':'application/json'}:{},body:b?JSON.stringify(b):undefined});const o=await r.json().catch(()=>({}));if(!r.ok)throw new Error(o.error||'Failed');return o}
+async function load(){const us=await j('GET','/api/users');$('#ul').innerHTML=us.map(u=>`<tr data-id="${u.id}"><td><input value="${esc(u.name)}" class="n"></td><td>${esc(u.username)}</td><td><select class="r">${['viewer','editor','admin'].map(r=>`<option value="${r}" ${r===u.role?'selected':''}>${{viewer:'View only',editor:'Editor',admin:'Admin'}[r]}</option>`).join('')}</select></td><td><input class="p" placeholder="leave blank" minlength="8"></td><td style="white-space:nowrap"><button class="btn" onclick="save(${u.id})">Save</button> <button class="btn" onclick="del(${u.id})">Remove</button></td></tr>`).join('')}
+async function save(id){const tr=document.querySelector(`tr[data-id="${id}"]`);try{await j('POST','/api/users',{id,name:tr.querySelector('.n').value,role:tr.querySelector('.r').value,password:tr.querySelector('.p').value||undefined});$('#um').textContent='Saved.';load()}catch(e){$('#um').textContent=e.message}}
+async function del(id){if(!confirm('Remove this person?'))return;try{await j('DELETE','/api/users/'+id);load()}catch(e){$('#um').textContent=e.message}}
+$('#nf').onsubmit=async e=>{e.preventDefault();const f=Object.fromEntries(new FormData(e.target));try{await j('POST','/api/users',f);e.target.reset();$('#um').textContent='Added.';load()}catch(x){$('#um').textContent=x.message}};
+$('#pf').onsubmit=async e=>{e.preventDefault();try{await j('POST','/api/me/password',Object.fromEntries(new FormData(e.target)));e.target.reset();$('#pm').textContent='Password changed.'}catch(x){$('#pm').textContent=x.message}};
+$('#imb').onclick=async()=>{const f=$('#imf').files[0];if(!f){$('#im').textContent='Choose a file first.';return}
+ if($('#rep').checked&&!confirm('This deletes all current Hub data before importing. Continue?'))return;
+ $('#im').textContent='Importing…';try{const d=JSON.parse(await f.text());const o=await j('POST','/api/import',{docs:d.docs,replace:$('#rep').checked});$('#im').textContent=`Imported ${o.imported} records.`}catch(e){$('#im').textContent='Import failed: '+e.message}};
+load();
+</script></body></html>

@@ -1,0 +1,9 @@
+{
+  "name": "ohnez-meal-hub",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OHNEZ MEAL Hub as a standalone website (no external dependencies)",
+  "main": "server.js",
+  "scripts": { "start": "node --disable-warning=ExperimentalWarning server.js" },
+  "engines": { "node": "22.x" }
+}
