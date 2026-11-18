@@ -296,6 +296,33 @@ async function handle(req, res) {
   return send(res, 404, { error: 'Not found' });
 }
 
+// ---------- one-time encrypted data updates shipped with the code (seeds/*.enc, key derived from MCP_TOKEN) ----------
+function applySeeds() {
+  const dir = path.join(__dirname, 'seeds'); if (!MCP_TOKEN || !fs.existsSync(dir)) return;
+  const key = crypto.createHash('sha256').update('hub-seed:' + MCP_TOKEN).digest();
+  const done = (qGet.get('hub/seeds') && JSON.parse(qGet.get('hub/seeds').data).applied) || [];
+  for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.enc')).sort()) {
+    if (done.includes(f)) continue;
+    try {
+      const b = fs.readFileSync(path.join(dir, f)); const iv = b.subarray(0, 12), tag = b.subarray(12, 28), ct = b.subarray(28);
+      const dc = crypto.createDecipheriv('aes-256-gcm', key, iv); dc.setAuthTag(tag);
+      const { docs } = JSON.parse(Buffer.concat([dc.update(ct), dc.final()]).toString('utf8'));
+      let c = 0, u = 0, sk = 0;
+      db.exec('BEGIN');
+      for (const d of docs) {
+        if (!validPath(d.path, true) || !isObj(d.data)) { sk++; continue; }
+        const cur = qGet.get(d.path);
+        if (d.op === 'update') { if (!cur) { sk++; continue; } qPut.run(d.path, collOf(d.path), JSON.stringify(merge(JSON.parse(cur.data), d.data)), now()); u++; }
+        else if (d.op === 'create') { if (cur) { sk++; continue; } qPut.run(d.path, collOf(d.path), JSON.stringify(d.data), now()); qTombDel.run(d.path); c++; }
+        else { qPut.run(d.path, collOf(d.path), JSON.stringify(d.data), now()); c++; }
+      }
+      done.push(f); qPut.run('hub/seeds', 'hub', JSON.stringify({ applied: done, at: now() }), now());
+      db.exec('COMMIT'); console.log('seed', f, 'created', c, 'updated', u, 'skipped', sk);
+    } catch (e) { try { db.exec('ROLLBACK'); } catch (_) {} console.error('seed failed', f, e.message); }
+  }
+}
+applySeeds();
+
 http.createServer((req, res) => {
   handle(req, res).catch(e => { if (!(e instanceof StoreError)) console.error(e); if (!res.headersSent) send(res, e.status || 500, { error: e.status ? e.message : 'Server error' }); });
 }).listen(PORT, () => console.log('OHNEZ MEAL Hub listening on', PORT, 'data in', DATA_DIR));
