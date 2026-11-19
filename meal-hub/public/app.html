@@ -4272,4 +4272,199 @@ addBtn();document.readyState==='loading'?document.addEventListener('DOMContentLo
 })();
 
 </script>
+<script>
+/* ---------- H&N Feedback & Response Mechanism (interim, C1–C9) — matches OHNEZ_FRM_Tracker.xlsx ---------- */
+(function(){
+const HN={
+  cats:[['C1','Request for information','Low',3,10],['C2','Suggestion or appreciation','Low',3,10],['C3','Minor dissatisfaction','Medium',2,10],
+    ['C4','Service quality or programme issue','Medium',2,15],['C5','Exclusion or targeting','Medium',2,15],['C6','Staff or partner misconduct (non-safeguarding)','High',1,10],
+    ['C7','Fraud, corruption or misuse of resources','Sensitive',1,1],['C8','Child safeguarding or PSEA','Sensitive',0,0],['C9','Outside OHNEZ scope','Low',3,5]],
+  channel:['Suggestion box','Help desk at activity','Phone / WhatsApp line','Face to face to staff','HMC / community meeting','Review meeting / scorecard'],
+  district:['Lumezi','Chipangali'],
+  location:['Lumezi Mission Hospital','Chanyalubwe HP','Kapongolo HP','Kazembe RHC','Kazonde HP','Sikatengwa HP','Zumwanda RHC','Community - Lumezi','Community - Chipangali','DHO / other'],
+  person:['Client or caregiver','Community member','CHV or CHA','Facility staff','HMC member','DHO staff','Partner staff','Other'],
+  sex:['Female','Male','Prefer not to say'],age:['<18','18-24','25-59','60+','Unknown'],disab:['Yes','No','Not asked'],yn:['No','Yes'],
+  route:['Phone call','WhatsApp / SMS','In person','Through HMC','Public notice (anonymous)','No reply needed'],
+  component:['Training','Mentorship','Equipment and supplies','Rehabilitation','Service quality','Community activity','Staff or partner conduct','Other'],
+  assigned:['MEAL Officer','Project Coordinator','Project Technical Officer','Facility in-charge','THP focal point','CCAP focal point','CHAZ focal point','FHN focal point','Safeguarding focal point','Fraud / compliance focal point','DHO (referral)'],
+  esc:['None','Level 1','Level 2','Level 3','Sensitive referral'],informed:['','Yes','No','Anonymous - answered publicly'],sat:['','Yes','Partly','No','Not asked'],
+  targets:{ack:.9,close:.8,loop:.9,sat:.7,sens:1}
+};
+window.HNFRM=HN;
+const catOf=c=>HN.cats.find(x=>x[0]===c);
+const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const addWD=(d,n)=>{const x=new Date(d);let k=n;while(x.getDay()===0||x.getDay()===6){if(!n)break;x.setDate(x.getDate()+1)}while(k>0){x.setDate(x.getDate()+1);if(x.getDay()!==0&&x.getDay()!==6)k--}return x};
+function calc(f){const c=catOf(f.cat);const d0=parse(f.date);const o={cat:c,sens:!!c&&c[2]==='Sensitive',ackDue:null,resDue:null,ackOk:null,closeOk:null,status:'',daysOpen:null};
+  if(!d0)return o;if(c){o.ackDue=addWD(d0,c[3]);o.resDue=addWD(d0,c[4])}
+  const a=parse(f.ack),z=parse(f.closed);if(o.ackDue&&a)o.ackOk=a<=o.ackDue;if(o.resDue&&z)o.closeOk=z<=o.resDue;
+  o.status=!c?'Not categorised':z?(o.sens?'Referred':'Closed'):(today()>o.resDue?'Overdue':'Open');
+  o.daysOpen=days(d0,z||today());return o}
+window.hnCalc=calc;
+const tone=(n,d,t)=>!d?'none':(n/d)/t>=.9?'good':(n/d)/t>=.7?'warn':'bad';
+const P=(n,d)=>d?Math.round(n/d*100)+'%':'–';
+const kpiT=(t,l,v,s,click)=>`<div class="card kpi ${t}" ${click?`style="cursor:pointer" onclick="${click}"`:''}><div class="l"><span class="dot"></span>${l}</div><div class="v">${v}</div><div class="s">${s||''}</div></div>`;
+const stTone={Closed:'t-good',Referred:'t-alert',Overdue:'t-bad',Open:'t-warn','Not categorised':'t-warn'};
+const sel=(name,arr,v,lab,extra)=>`<label>${lab}<select name="${name}" ${dis()} ${extra||''}>${opt(arr,v||'')}</select></label>`;
+const fsel=(key,label,arr,all)=>`<select aria-label="${label}" onchange="S.f['${key}']=this.value;render()"><option value="">${all}</option>${arr.map(o=>`<option ${S.f[key]===o?'selected':''} value="${esc(o)}">${esc(o)}</option>`).join('')}</select>`;
+const mkey=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+const mlab=k=>MON[+k.slice(5)-1]+' '+k.slice(0,4);
+function periodOk(f,p){if(!p)return true;const d=parse(f.date);if(!d)return false;if(/^\d{4}$/.test(p))return d.getFullYear()===+p;if(/^Q/.test(p))return quarter(d)===p;return mkey(d)===p}
+function filtered(){const L=S.hnfrm||[];const p=S.f.hnP||'';const q=(S.f.hnQ||'').toLowerCase();
+  return L.map(f=>[f,calc(f)]).filter(([f,c])=>periodOk(f,p)&&(!S.f.hnD||f.district===S.f.hnD)&&(!S.f.hnL||f.location===S.f.hnL)&&(!S.f.hnC||f.cat===S.f.hnC)&&(!S.f.hnS||c.status===S.f.hnS)&&(!S.f.hnCh||f.channel===S.f.hnCh)&&(!q||JSON.stringify(f).toLowerCase().includes(q)))}
+function hbars(rows,mx,click){mx=Math.max(1,mx);return rows.map(([l,n,o,key])=>`<div style="display:grid;grid-template-columns:minmax(120px,220px) 1fr 64px;gap:10px;align-items:center;margin:7px 0;${click&&n?'cursor:pointer':''}" ${click&&n?`onclick="S.f['${click}']=${JSON.stringify(key||l).replace(/"/g,'&quot;')};render()" title="Filter by ${esc(l)}"`:''}><span class="small">${esc(l)}</span><div style="height:14px;border-radius:999px;background:var(--surface-sunk,#ebebe8);overflow:hidden;display:flex"><div style="width:${(n-(o||0))/mx*100}%;background:var(--brand-2,#1f6fc5);transition:width .5s"></div><div style="width:${(o||0)/mx*100}%;background:var(--bad-ink,#c0392b);opacity:.8"></div></div><b class="small" style="text-align:right">${n}${o?` <span style="color:var(--bad-ink)">(${o})</span>`:''}</b></div>`).join('')}
+
+EXTRA_VIEWS.hnfrm=function(){
+  const all=(S.hnfrm||[]).map(f=>[f,calc(f)]);const L=filtered();const v=S.f.hnV||'dash';
+  const yrs=[...new Set(all.map(([f])=>(f.date||'').slice(0,4)).filter(Boolean))].sort();
+  const qs=[...new Set(all.filter(([f])=>f.date).map(([f])=>quarter(parse(f.date))))].sort((a,b)=>a.slice(3)+a[1]<b.slice(3)+b[1]?-1:1);
+  const ms=[...new Set(all.filter(([f])=>f.date).map(([f])=>mkey(parse(f.date))))].sort();
+  const pOpts=[...yrs.map(y=>[y,'Year '+y]),...qs.map(q=>[q,q]),...ms.map(m=>[m,mlab(m)])];
+  const activeF=['hnP','hnD','hnL','hnC','hnS','hnCh','hnQ'].filter(k=>S.f[k]).length;
+  let h=`<div class="toolbar" style="flex-wrap:wrap;gap:8px">
+   <div class="seg" role="group" aria-label="View">${[['dash','Dashboard'],['reg','Register'],['sum','Monthly summary'],['design','How it works']].map(([k,l])=>`<button class="btn sm ${v===k?'primary':''}" onclick="S.f.hnV='${k}';render()">${l}</button>`).join('')}</div>
+   <span class="grow"></span>
+   <button class="btn" onclick="hnExport()">${ic('dl')} Download Excel</button>
+   ${S.canEdit?`<label class="btn" style="cursor:pointer">${ic('upload')} Import from Excel tracker<input type="file" accept=".xlsx" hidden onchange="hnImport(this.files[0]);this.value=''"></label><button class="btn primary" onclick="hnEdit()">${ic('plus')} Log feedback</button>`:''}</div>
+  <div class="toolbar" style="flex-wrap:wrap;gap:8px;margin-bottom:var(--space-4)">
+   <select aria-label="Period" onchange="S.f.hnP=this.value;render()"><option value="">All periods</option>${pOpts.map(([k,l])=>`<option value="${k}" ${S.f.hnP===k?'selected':''}>${l}</option>`).join('')}</select>
+   ${fsel('hnD','District',HN.district,'All districts')}${fsel('hnL','Facility / location',HN.location,'All facilities / locations')}
+   <select aria-label="Category" onchange="S.f.hnC=this.value;render()"><option value="">All categories</option>${HN.cats.map(c=>`<option value="${c[0]}" ${S.f.hnC===c[0]?'selected':''}>${c[0]} – ${esc(c[1])}</option>`).join('')}</select>
+   ${fsel('hnCh','Channel',HN.channel,'All channels')}${fsel('hnS','Status',['Open','Overdue','Closed','Referred','Not categorised'],'All statuses')}
+   ${v==='reg'?`<input type="search" placeholder="Search…" aria-label="Search" value="${esc(S.f.hnQ||'')}" oninput="S.f.hnQ=this.value;clearTimeout(window._hq);window._hq=setTimeout(()=>{render();const e=document.querySelector('#view input[type=search]');if(e){e.focus();e.setSelectionRange(e.value.length,e.value.length)}},250)">`:''}
+   ${activeF?`<button class="btn ghost sm" onclick="['hnP','hnD','hnL','hnC','hnS','hnCh','hnQ'].forEach(k=>delete S.f[k]);render()">Clear filters (${activeF})</button>`:''}
+   <span class="small muted">${L.length} of ${all.length} case${all.length===1?'':'s'}</span></div>`;
+  if(v==='design')return h+hnDesign();
+  if(v==='sum')return h+hnSummary(L);
+  if(v==='reg')return h+hnRegister(L);
+  return h+hnDash(L,all);
+};
+
+function hnDash(L,all){
+  if(!all.length)return `<div class="card empty" style="padding:32px;text-align:center"><p style="margin:0 0 12px">No H&N feedback logged yet. Log cases here or import the Excel tracker.</p>${S.canEdit?`<button class="btn primary" onclick="hnEdit()">${ic('plus')} Log feedback</button>`:''}</div>`;
+  const c=fn=>L.filter(fn).length;const st=s=>c(([f,x])=>x.status===s);
+  const ackD=L.filter(([f,x])=>x.ackOk!==null),ackY=ackD.filter(([f,x])=>x.ackOk).length;
+  const clD=L.filter(([f,x])=>x.closeOk!==null&&!x.sens),clY=clD.filter(([f,x])=>x.closeOk).length;
+  const closed=L.filter(([f,x])=>x.status==='Closed'),loop=closed.filter(([f])=>f.informed==='Yes'||f.informed==='Anonymous - answered publicly').length;
+  const satD=L.filter(([f])=>['Yes','Partly','No'].includes(f.satisfied)),satY=satD.filter(([f])=>f.satisfied==='Yes').length;
+  const sD=L.filter(([f,x])=>x.sens&&x.closeOk!==null),sY=sD.filter(([f,x])=>x.closeOk).length;const T=HN.targets;
+  const go=s=>`S.f.hnS='${s}';S.f.hnV='reg';render()`;
+  let h=`<div class="grid g-kpi" style="margin-bottom:var(--space-4)">
+   ${kpiT('none','Cases received',L.length,`${c(([f])=>f.anonymous==='Yes')} anonymous · ${c(([f,x])=>x.sens)} sensitive`,"S.f.hnV='reg';render()")}
+   ${kpiT(st('Open')?'warn':'good','Open',st('Open'),'within deadline · view ›',go('Open'))}
+   ${kpiT(st('Overdue')?'bad':'good','Overdue',st('Overdue'),'past resolve / refer date · view ›',go('Overdue'))}
+   ${kpiT('good','Closed',st('Closed'),`+ ${st('Referred')} referred (sensitive)`,go('Closed'))}</div>
+  <div class="grid g-kpi" style="margin-bottom:var(--space-5)">
+   ${kpiT(tone(ackY,ackD.length,T.ack),'Acknowledged on time',P(ackY,ackD.length),`${ackY} of ${ackD.length} · target ${T.ack*100}%`)}
+   ${kpiT(tone(clY,clD.length,T.close),'Closed on time',P(clY,clD.length),`${clY} of ${clD.length} · target ${T.close*100}%`)}
+   ${kpiT(tone(loop,closed.length,T.loop),'Loop closed',P(loop,closed.length),`person informed · target ${T.loop*100}%`)}
+   ${kpiT(tone(satY,satD.length,T.sat),'Satisfied',P(satY,satD.length),`${satY} of ${satD.length} asked · target ${T.sat*100}%`)}
+   ${kpiT(sD.length?tone(sY,sD.length,T.sens):'none','Sensitive referred on time',sD.length?P(sY,sD.length):'–',`C7 ≤24 h · C8 same day · target 100%`)}</div>`;
+  const by=(key,list,lab)=>list.map(o=>{const r=L.filter(([f])=>f[key]===o);return [lab?lab(o):o,r.length,r.filter(([f,x])=>x.status==='Overdue').length,o]});
+  const catR=by('cat',HN.cats.map(x=>x[0]),k=>k+' – '+catOf(k)[1]);
+  const box=(t,rows,fk,note)=>`<div class="card" style="padding:16px"><h3 style="margin:0 0 10px">${t}</h3>${hbars(rows,Math.max(...rows.map(r=>r[1])),fk)}${note?`<p class="small muted" style="margin:8px 0 0">${note}</p>`:''}</div>`;
+  h+=`<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:18px;margin-bottom:var(--space-5)">
+   ${box('By category',catR,'hnC','Red = overdue. Click a bar to filter.')}${box('By facility / location',by('location',HN.location),'hnL')}
+   ${box('By channel',by('channel',HN.channel),'hnCh')}
+   <div class="card" style="padding:16px"><h3 style="margin:0 0 10px">Who gave feedback</h3>${hbars(by('sex',HN.sex),L.length)}<hr style="border:0;border-top:1px solid var(--line);margin:10px 0">${hbars(by('age',HN.age),L.length)}<hr style="border:0;border-top:1px solid var(--line);margin:10px 0">${hbars(by('person',HN.person),L.length)}<p class="small muted" style="margin:8px 0 0">${c(([f])=>f.disability==='Yes')} with a disability</p></div>
+   ${box('By project component',by('component',HN.component))}${box('Escalation',by('escalation',HN.esc))}</div>`;
+  const od=L.filter(([f,x])=>x.status==='Overdue').sort((a,b)=>a[1].resDue-b[1].resDue);
+  h+=`<div class="card" style="padding:16px"><h3 style="margin:0 0 10px">Needs action now</h3>${od.length?`<div class="tw" style="box-shadow:none"><table><thead><tr><th>Case</th><th>Received</th><th>Category</th><th>Location</th><th>Assigned to</th><th>Was due</th><th class="num">Days open</th></tr></thead><tbody>${od.map(([f,x])=>`<tr class="click" onclick="hnEdit('${f.id}')"><td><b>${esc(f.id)}</b></td><td class="nowrap">${esc(f.date)}</td><td>${esc(f.cat)}</td><td class="small">${esc(f.location||'')}</td><td class="small">${esc(f.assigned||'')}</td><td class="nowrap">${iso(x.resDue)}</td><td class="num">${x.daysOpen}</td></tr>`).join('')}</tbody></table></div>`:`<p class="small muted" style="margin:0">Nothing overdue.</p>`}</div>`;
+  return h}
+
+function hnSummary(L){
+  const all=(S.hnfrm||[]).map(f=>[f,calc(f)]);const ds=all.map(([f])=>parse(f.date)).filter(Boolean);
+  const yrs=[...new Set(ds.map(d=>d.getFullYear()))].sort();if(!yrs.length)yrs.push(today().getFullYear());
+  const y=+(S.f.hnY||yrs[yrs.length-1]);
+  const base=L.filter(([f])=>(f.date||'').startsWith(y+'-'));
+  const rows=MON.map((m,i)=>{const k=y+'-'+String(i+1).padStart(2,'0');const R=base.filter(([f])=>f.date.slice(0,7)===k);
+    const aD=R.filter(([f,x])=>x.ackOk!==null),aY=aD.filter(([f,x])=>x.ackOk).length;const cl=R.filter(([f,x])=>x.status==='Closed'||x.status==='Referred');const cY=R.filter(([f,x])=>x.closeOk).length;const cD=R.filter(([f,x])=>x.closeOk!==null).length;
+    return {m:m+' '+y,n:R.length,s:R.filter(([f,x])=>x.sens).length,aY,aD:aD.length,cl:cl.length,cY,cD,sat:R.filter(([f])=>f.satisfied==='Yes').length,op:R.filter(([f,x])=>x.status==='Open'||x.status==='Overdue').length,od:R.filter(([f,x])=>x.status==='Overdue').length,top:(()=>{const t={};R.forEach(([f])=>{if(f.cat)t[f.cat]=(t[f.cat]||0)+1});const e=Object.entries(t).sort((a,b)=>b[1]-a[1])[0];return e?e[0]+' ('+e[1]+')':''})()}});
+  const tot=rows.reduce((a,r)=>{for(const k of ['n','s','aY','aD','cl','cY','cD','sat','op','od'])a[k]=(a[k]||0)+r[k];return a},{});
+  const mx=Math.max(1,...rows.map(r=>r.n));
+  let h=`<div class="toolbar"><label class="small">Year <select onchange="S.f.hnY=this.value;render()">${yrs.map(x=>`<option ${x===y?'selected':''}>${x}</option>`).join('')}</select></label><span class="grow small muted">Follows the filters above. "Closed on time" counts cases received that month closed or referred by their deadline.</span><button class="btn" onclick="hnExport()">${ic('dl')} Download Excel</button></div>
+  <div class="card" style="padding:16px;margin-bottom:var(--space-5)"><h3 style="margin:0 0 12px">Cases received per month · ${y}</h3><div style="display:flex;align-items:flex-end;gap:10px;height:170px">${rows.map(r=>`<div style="flex:1;text-align:center" title="${r.m}: ${r.n} received, ${r.od} overdue"><div class="small"><b>${r.n||''}</b></div><div style="height:${Math.round(r.n/mx*130)}px;border-radius:6px 6px 0 0;background:linear-gradient(to top,var(--bad-ink,#c0392b) ${r.n?r.od/r.n*100:0}%,var(--brand-2,#1f6fc5) ${r.n?r.od/r.n*100:0}%);transition:height .5s"></div><div class="small muted">${r.m.slice(0,3)}</div></div>`).join('')}</div><p class="small muted" style="margin:8px 0 0">Red part of each bar = cases still overdue.</p></div>
+  <div class="tw"><table><thead><tr><th>Month</th><th class="num">Received</th><th class="num">Sensitive</th><th class="num">Ack on time</th><th class="num">Closed / referred</th><th class="num">Closed on time</th><th class="num">Satisfied</th><th class="num">Still open</th><th class="num">Overdue</th><th>Top category</th></tr></thead><tbody>
+  ${rows.map(r=>`<tr><td><b>${r.m}</b></td><td class="num">${r.n}</td><td class="num">${r.s}</td><td class="num">${P(r.aY,r.aD)}</td><td class="num">${r.cl}</td><td class="num">${P(r.cY,r.cD)}</td><td class="num">${r.sat}</td><td class="num">${r.op}</td><td class="num">${r.od?`<b style="color:var(--bad-ink)">${r.od}</b>`:0}</td><td class="small">${esc(r.top)}</td></tr>`).join('')}</tbody>
+  <tfoot><tr><th>Total ${y}</th><th class="num">${tot.n}</th><th class="num">${tot.s}</th><th class="num">${P(tot.aY,tot.aD)}</th><th class="num">${tot.cl}</th><th class="num">${P(tot.cY,tot.cD)}</th><th class="num">${tot.sat}</th><th class="num">${tot.op}</th><th class="num">${tot.od}</th><th></th></tr></tfoot></table></div>`;
+  return h}
+
+function hnRegister(L){
+  let h=`<p class="small muted" style="margin:0 0 10px">No names or contact numbers are stored here. Keep those in the restricted Excel log. For C7/C8 the description is locked to NONE; details go only to the SCI focal point.</p><div class="tw"><table><thead><tr><th>Case</th><th>Received</th><th>Category</th><th>Channel</th><th>Location</th><th style="min-width:220px">Description</th><th>Assigned to</th><th>Ack by</th><th>Resolve by</th><th>Status</th><th class="num">Days</th><th>Informed</th></tr></thead><tbody>`;
+  if(!L.length)h+=`<tr><td colspan="12" class="empty">No cases match the filters.</td></tr>`;
+  [...L].sort((a,b)=>String(b[0].date).localeCompare(String(a[0].date))||String(b[0].id).localeCompare(String(a[0].id))).forEach(([f,x])=>{
+    h+=`<tr class="click" onclick="hnEdit('${f.id}')"><td class="nowrap"><b>${esc(f.id)}</b></td><td class="nowrap">${esc(f.date||'')}</td><td>${x.cat?chip(x.sens?'t-alert':x.cat[2]==='High'?'t-bad':x.cat[2]==='Medium'?'t-warn':'t-none',f.cat):''}<div class="small muted">${x.cat?esc(x.cat[1]):''}</div></td><td class="small">${esc(f.channel||'')}</td><td class="small">${esc(f.location||'')}</td><td class="small">${esc(String(f.description||'').slice(0,160))}</td><td class="small">${esc(f.assigned||'')}</td>
+    <td class="nowrap small">${x.ackDue?iso(x.ackDue):''}${x.ackOk===false?' '+chip('t-bad','Late'):x.ackOk?' ✓':''}</td><td class="nowrap small">${x.resDue?iso(x.resDue):''}${x.closeOk===false?' '+chip('t-bad','Late'):''}</td><td>${chip(stTone[x.status]||'t-none',x.status)}</td><td class="num">${x.daysOpen??''}</td><td class="small">${esc(f.informed||'')}</td></tr>`});
+  return h+`</tbody></table></div>`}
+
+function hnDesign(){
+  return `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:18px">
+  <div class="card" style="padding:16px"><h3 style="margin:0 0 8px">Purpose</h3><p class="small" style="margin:0">SMT asked for a feedback mechanism for Health & Nutrition because of the scale of investment in the programme. This tab runs the interim OHNEZ FRM until the central MEAL mechanism is ready. It covers the 7 supported facilities, their catchment communities and OHNEZ community activities in Lumezi and Chipangali. It uses the same categories and fields as the Excel tracker, so data can be moved across without rework.</p>
+   <h3 style="margin:16px 0 8px">Case workflow</h3><ol class="small" style="margin:0;padding-left:18px;display:grid;gap:4px"><li>Receive feedback through any channel</li><li>Log it here the same day and choose a category</li><li>C7 or C8: refer to the SCI focal point (C8 same day, C7 within 24 h) and stop</li><li>Acknowledge within the deadline</li><li>Assign an owner and resolve</li><li>Escalate if not resolved by the deadline (level 2, then 3)</li><li>Tell the person the outcome, record satisfaction, close</li></ol></div>
+  <div class="card" style="padding:16px"><h3 style="margin:0 0 8px">Categories and deadlines <span class="small muted" style="font-weight:400">working days</span></h3><div class="tw" style="box-shadow:none"><table><thead><tr><th>Code</th><th>Category</th><th>Priority</th><th class="num">Acknowledge</th><th class="num">Resolve / refer</th></tr></thead><tbody>${HN.cats.map(c=>`<tr><td><b>${c[0]}</b></td><td class="small">${esc(c[1])}</td><td>${chip(c[2]==='Sensitive'?'t-alert':c[2]==='High'?'t-bad':c[2]==='Medium'?'t-warn':'t-none',c[2])}</td><td class="num">${c[3]===0?'same day':c[3]}</td><td class="num">${c[4]===0?'same day':c[4]}</td></tr>`).join('')}</tbody></table></div><p class="small muted" style="margin:8px 0 0">Proposed timelines – to be confirmed by the team.</p></div>
+  <div class="card" style="padding:16px"><h3 style="margin:0 0 8px">Channels</h3><ul class="small" style="margin:0;padding-left:18px">${HN.channel.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
+   <h3 style="margin:16px 0 8px">Escalation</h3><ul class="small" style="margin:0;padding-left:18px"><li><b>Level 1</b> – MEAL Officer with facility in-charge or partner focal point</li><li><b>Level 2</b> – Project Coordinator</li><li><b>Level 3</b> – Head of Programme Operations / Programmes Director</li><li><b>Sensitive</b> – SCI safeguarding (C8) or fraud/compliance (C7) focal point</li></ul></div>
+  <div class="card" style="padding:16px"><h3 style="margin:0 0 8px">Indicators and targets</h3><ul class="small" style="margin:0;padding-left:18px"><li>Acknowledged on time ≥ 90%</li><li>Closed on time ≥ 80%</li><li>Loop closed (person informed) ≥ 90%</li><li>Satisfied with response ≥ 70%</li><li>Sensitive cases referred on time 100%</li></ul><p class="small muted" style="margin:8px 0 0">Tile colour = result ÷ target: green ≥90%, amber 70–89%, red &lt;70% (OHNEZ convention).</p></div></div>`}
+
+window.hnEdit=function(id){
+  const L=S.hnfrm||[];const yr=today().getFullYear();
+  const nid=()=>{let mx=0;L.forEach(x=>{const m=String(x.id).match(/^OHNEZ-FRM-(\d{4})-(\d{4})$/);if(m&&+m[1]===yr&&+m[2]>mx)mx=+m[2]});return `OHNEZ-FRM-${yr}-${String(mx+1).padStart(4,'0')}`};
+  const f=id?L.find(x=>x.id===id):{id:nid(),date:iso(today()),anonymous:'No',escalation:'None',district:'Lumezi'};if(!f)return;
+  const x=calc(f);
+  document.getElementById('dlgT').textContent=(id?'Feedback ':'Log feedback ')+f.id;
+  document.getElementById('dlgB').innerHTML=`<div class="form" id="hnf">
+   <label>Date received<input type="date" name="date" value="${esc(f.date||'')}" ${dis()} onchange="hnLive()"></label>
+   ${sel('channel',['',...HN.channel],f.channel,'Channel')}${sel('district',HN.district,f.district,'District')}${sel('location',['',...HN.location],f.location,'Facility / location')}
+   ${sel('person',['',...HN.person],f.person,'Type of person')}${sel('sex',['',...HN.sex],f.sex,'Sex')}${sel('age',['',...HN.age],f.age,'Age group')}${sel('disability',['',...HN.disab],f.disability,'Disability')}
+   ${sel('anonymous',HN.yn,f.anonymous,'Anonymous?')}${sel('route',['',...HN.route],f.route,'Preferred reply route')}
+   <label>Category<select name="cat" ${dis()} onchange="hnLive()"><option value="">—</option>${HN.cats.map(c=>`<option value="${c[0]}" ${f.cat===c[0]?'selected':''}>${c[0]} – ${esc(c[1])}</option>`).join('')}</select></label>
+   ${sel('component',['',...HN.component],f.component,'Project component')}
+   <div class="full" id="hnInfo"></div>
+   <label class="full">Description (facts only, in the person's words)<textarea name="description" id="hnDesc" ${dis()}>${esc(f.description||'')}</textarea></label>
+   ${sel('assigned',['',...HN.assigned],f.assigned,'Assigned to')}${sel('escalation',HN.esc,f.escalation||'None','Escalation level')}
+   <label>Date acknowledged<input type="date" name="ack" value="${esc(f.ack||'')}" ${dis()} onchange="hnLive()"></label>
+   <label>Date closed / referred<input type="date" name="closed" value="${esc(f.closed||'')}" ${dis()} onchange="hnLive()"></label>
+   <label class="full">Action taken<textarea name="action" ${dis()}>${esc(f.action||'')}</textarea></label>
+   ${sel('informed',HN.informed,f.informed,'Person informed of outcome?')}${sel('satisfied',HN.sat,f.satisfied,'Satisfied with response?')}
+   ${sel('linkedAT',['',...(S.actions||[]).map(a=>a.id)],f.linkedAT,'Linked Action Tracker ID')}</div>`;
+  document.getElementById('dlgF').innerHTML=S.canEdit?`${id?`<button class="btn ghost" style="margin-right:auto" onclick="if(confirm('Delete ${f.id}?')){dlg.close();write(()=>db.doc(dp('hnfrm','${f.id}')).delete())}">Delete</button>`:''}<button class="btn" onclick="dlg.close()">Cancel</button><button class="btn primary" onclick="hnSave('${f.id}')">Save</button>`:'<button class="btn" onclick="dlg.close()">Close</button>';
+  dlg.showModal();hnLive()};
+window.hnLive=function(){const o=formData('#hnf');const x=calc(o);const el=document.getElementById('hnInfo');const d=document.getElementById('hnDesc');if(!el)return;
+  if(d){if(x.sens){if(d.value&&d.value!=='NONE'&&!d.dataset.warned){d.dataset.warned=1;alert('C7/C8 are sensitive. Do not record details here – they go only to the SCI focal point. The description will be saved as NONE.')}d.value='NONE';d.readOnly=true}else{if(d.value==='NONE')d.value='';d.readOnly=false}}
+  el.innerHTML=x.cat?`<div class="card" style="padding:10px 14px;border-left:4px solid var(--${x.sens?'bad':x.cat[2]==='High'?'bad':'warn'}-ink);box-shadow:none"><b>${x.cat[2]} priority.</b> Acknowledge by <b>${x.ackDue?iso(x.ackDue):'–'}</b> · ${x.sens?'refer':'resolve'} by <b>${x.resDue?iso(x.resDue):'–'}</b> · status <b>${x.status||'–'}</b>${x.sens?'<div class="small" style="margin-top:4px;color:var(--bad-ink)">Sensitive: report to the SCI '+(o.cat==='C8'?'safeguarding focal point the same day':'fraud / compliance focal point within 24 hours')+'. Record only the referral date.</div>':''}</div>`:'<p class="small muted" style="margin:0">Choose a category to see the deadlines.</p>'};
+window.hnSave=function(id){const o=formData('#hnf');if(!o.date){alert('Enter the date received.');return}if(!o.cat){alert('Choose a category.');return}
+  const x=calc(o);if(x.sens)o.description='NONE';else if(!o.description){alert('Enter a short description.');return}
+  if(x.sens&&o.escalation==='None')o.escalation='Sensitive referral';
+  if(o.closed&&o.date&&o.closed<o.date){alert('The closed date is before the date received.');return}
+  o.id=id;o.updated=new Date().toISOString();dlg.close();write(()=>db.doc(dp('hnfrm',id)).set(o))};
+
+const XCOLS=[['Case ID','id'],['Date received','date'],['Channel','channel'],['District','district'],['Facility / location','location'],['Type of person','person'],['Sex','sex'],['Age group','age'],['Disability','disability'],['Anonymous?','anonymous'],['Preferred reply route','route'],['Category code','cat'],['Category',null],['Priority',null],['Sensitive?',null],['Project component','component'],['Description','description'],['Assigned to','assigned'],['Acknowledge by',null],['Date acknowledged','ack'],['Ack on time?',null],['Resolve / refer by',null],['Escalation level','escalation'],['Action taken','action'],['Date closed / referred','closed'],['Closed on time?',null],['Person informed?','informed'],['Satisfied?','satisfied'],['Status',null],['Days open',null]];
+window.hnExport=function(){const L=filtered();
+  const A=[XCOLS.map(c=>c[0])];L.forEach(([f,x])=>A.push([f.id,f.date,f.channel,f.district,f.location,f.person,f.sex,f.age,f.disability,f.anonymous,f.route,f.cat,x.cat?x.cat[1]:'',x.cat?x.cat[2]:'',x.sens?'Yes':'No',f.component,f.description,f.assigned,x.ackDue?iso(x.ackDue):'',f.ack,x.ackOk===null?'':x.ackOk?'Yes':'No',x.resDue?iso(x.resDue):'',f.escalation,f.action,f.closed,x.closeOk===null?'':x.closeOk?'Yes':'No',f.informed,f.satisfied,x.status,x.daysOpen??''].map(v=>v??'')));
+  const C=[['Code','Category','Received','Open','Overdue','Closed / referred']];HN.cats.forEach(c=>{const R=L.filter(([f])=>f.cat===c[0]);C.push([c[0],c[1],R.length,R.filter(([f,x])=>x.status==='Open').length,R.filter(([f,x])=>x.status==='Overdue').length,R.filter(([f,x])=>/Closed|Referred/.test(x.status)).length])});
+  saveXlsx('OHNEZ_HN_Feedback_'+iso(today())+'.xlsx',[{name:'Feedback Log',aoa:A,cols:XCOLS.map(c=>c[0]==='Description'||c[0]==='Action taken'?40:16)},{name:'By category',aoa:C,cols:[8,44,10,8,10,16]}])};
+window.hnImport=async function(file){if(!file)return;try{const X=await loadXLSX();const wb=X.read(await file.arrayBuffer(),{type:'array',cellDates:true});const ws=wb.Sheets['Feedback Log'];if(!ws){alert('No "Feedback Log" sheet found. Use the OHNEZ_FRM_Tracker.xlsx file.');return}
+  const rows=X.utils.sheet_to_json(ws,{header:1,raw:true,defval:''});const hi=rows.findIndex(r=>r.includes('Date received'));if(hi<0){alert('Header row not found.');return}
+  const H=rows[hi].map(h=>String(h).trim());const ix=n=>H.findIndex(h=>h===n||h.startsWith(n));
+  const map={id:'Case ID',date:'Date received',channel:'Channel',district:'District',location:'Facility / location',person:'Type of person',sex:'Sex',age:'Age group',disability:'Disability',anonymous:'Anonymous?',route:'Preferred reply route',cat:'Category code',component:'Project component',description:'Description',assigned:'Assigned to',ack:'Date acknowledged',escalation:'Escalation level',action:'Action taken',closed:'Date closed / referred',informed:'Person informed?',satisfied:'Satisfied?'};
+  const dv=v=>v instanceof Date?iso(new Date(v.getTime()+12*36e5)):typeof v==='number'?iso(new Date(Math.round((v-25569)*864e5)+12*36e5)):String(v||'').trim();
+  const out=[];rows.slice(hi+1).forEach(r=>{const g=k=>{const i=ix(map[k]);return i<0?'':r[i]};if(!g('date'))return;const o={};Object.keys(map).forEach(k=>{o[k]=/^(date|ack|closed)$/.test(k)?dv(g(k)):String(g(k)??'').trim()});
+    if(/^EXAMPLE/i.test(o.description))return;if(!o.id){const y=o.date.slice(0,4);o.id=`OHNEZ-FRM-${y}-X${out.length+1}`}if(calc(o).sens)o.description='NONE';o.updated=new Date().toISOString();o.importedFrom=file.name;out.push(o)});
+  if(!out.length){alert('No cases found in the file (the example row is skipped).');return}
+  const exist=new Set((S.hnfrm||[]).map(x=>x.id));const upd=out.filter(o=>exist.has(o.id)).length;
+  if(!confirm(`Import ${out.length} case(s) from ${file.name}?\n${out.length-upd} new · ${upd} will update existing cases with the same Case ID.\nNames and contacts are not imported.`))return;
+  write(async()=>{for(const o of out)await db.doc(dp('hnfrm',o.id)).set(o);toast(`Imported ${out.length} feedback case(s).`)})}catch(e){alert('Import failed: '+((e&&e.message)||e))}};
+
+/* register the tab */
+ICON.hnfrm='<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M8 11h8M8 14h5"/>';
+{const ai=TABS.findIndex(t=>t[0]==='frm');TABS.splice(ai>=0?ai+1:TABS.length,0,['hnfrm','H&N Feedback (FRM)'])}
+[typeof NAVGRP!=='undefined'?NAVGRP:[],typeof NAVG!=='undefined'?NAVG:[]].forEach(G=>{const g=G.find(x=>x[0]==='Act & account');if(g&&!g[1].includes('hnfrm')){const j=g[1].indexOf('frm');g[1].splice(j>=0?j+1:g[1].length,0,'hnfrm')}});
+TABHELP.hnfrm='Interim Health & Nutrition feedback mechanism requested by SMT: log cases (C1–C9), track deadlines, and see a live dashboard and monthly summary. Same fields as the Excel tracker.';
+try{APPS.push(['hnfrm','H&N Feedback (FRM)','Feedback cases, deadlines, live dashboard and monthly summary'])}catch(e){}
+COLS.push(['hnfrm','hnfrm',(a,b)=>String(b.date||'').localeCompare(String(a.date||''))]);
+S.hnfrm=S.hnfrm||[];
+if(!HUB_SYNC_COLS.includes('hnfrm'))HUB_SYNC_COLS.push('hnfrm');
+/* overview: flag overdue H&N cases on the hub's to-do list */
+try{if(typeof hlGo==='function'){}}catch(e){}
+})();
+</script>
 </body></html>
