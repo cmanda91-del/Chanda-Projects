@@ -4184,9 +4184,21 @@ function countUp(root){if(matchMedia('(prefers-reduced-motion: reduce)').matches
 window.hubRefreshAll=async function(){try{S.hfra=undefined;S.geo=undefined;S.reach=undefined}catch(e){}
   try{if(typeof hubPollNow==='function')hubPollNow()}catch(e){}
   if(typeof refreshAll==='function')await refreshAll();S._lastRef=new Date();render()};
+/* automatic full refresh every 2 minutes while the page is on screen; skipped while someone is typing or a form is open */
+const AUTO_MS=120000;
+async function autoRefresh(){try{
+  if(document.hidden||!S.proj)return;
+  if(typeof dlg!=='undefined'&&dlg&&dlg.open)return;
+  const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&a.type!=='checkbox')return;
+  if(document.querySelector('.gmenu:not([hidden])')&&document.querySelector('.gdd.open'))return;
+  const y=scrollY,_t=window.toast;window.toast=function(m){if(!/^Refreshed/.test(String(m)))_t&&_t.apply(this,arguments)};
+  try{await hubRefreshAll()}finally{window.toast=_t;scrollTo(0,y)}
+}catch(e){}}
+setInterval(autoRefresh,AUTO_MS);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S._lastRef&&Date.now()-S._lastRef>AUTO_MS)autoRefresh()});
 function addRefresh(){const nav=document.querySelector('#side .gnav');if(!nav||nav.querySelector('.hubref'))return;
   const t=S._lastRef||S.refreshedAt||S.loadedAt;const when=t?new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}):'';
-  const b=`<button type="button" class="hubref refresh-top" onclick="hubRefreshAll()" title="Reload every page from the data source (the latest data saved by everyone)"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></svg>Refresh${when?` <small>${when}</small>`:''}</button>`;
+  const b=`<button type="button" class="hubref refresh-top" onclick="hubRefreshAll()" title="Reload every page from the data source. Also refreshes automatically every 2 minutes."><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></svg>Refresh${when?` <small>${when} · auto 2 min</small>`:' <small>auto 2 min</small>'}</button>`;
   const sp=nav.querySelector('.gsp');sp?sp.insertAdjacentHTML('afterend',b):nav.insertAdjacentHTML('beforeend',b)}
 const _render=render;render=function(){_render.apply(this,arguments);try{addRefresh();navH();const v=document.getElementById('view');const key=(S.pid||'')+'/'+(S.tab||'');
   if(v&&key!==lastKey&&S.proj&&v.children.length&&!/Loading/.test(v.textContent.slice(0,40))){lastKey=key;v.classList.remove('ui-in');void v.offsetWidth;v.classList.add('ui-in');countUp(v);setTimeout(()=>v.classList.remove('ui-in'),900)}}catch(e){}};
