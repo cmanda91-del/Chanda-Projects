@@ -205,6 +205,7 @@ async function handle(req, res) {
   }
   if (p === '/api/logout' && m === 'POST') return send(res, 200, { ok: true }, { 'Set-Cookie': 'hub_sess=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' });
 
+  if (p === '/api/intake/hnfrm' && m === 'POST') return intakeHN(req, res);
   if (!p.startsWith('/api/')) return send(res, 404, 'Not found');
   if (!user) return send(res, 401, { error: 'Sign in required' });
   const admin = user.role === 'admin';
@@ -294,6 +295,50 @@ async function handle(req, res) {
     return res.end(Buffer.from(r.bytes));
   }
   return send(res, 404, { error: 'Not found' });
+}
+
+
+// ---------- H&N feedback intake from the Google Sheet (Apps Script posts here with X-Intake-Key) ----------
+const INTAKE_KEY = process.env.INTAKE_KEY || '';
+const HN_LOC = ['Lumezi Mission Hospital','Chanyalubwe HP','Kapongolo HP','Kazembe RHC','Kazonde HP','Sikatengwa HP','Zumwanda RHC','Community - Lumezi','Community - Chipangali','DHO / other'];
+const HN_FIELDS = ['channel','district','location','person','sex','age','disability','anonymous','route','component','collector'];
+function keyOk(k) { const a = Buffer.from(String(k || '')), b = Buffer.from(INTAKE_KEY); return INTAKE_KEY.length >= 24 && a.length === b.length && crypto.timingSafeEqual(a, b); }
+async function intakeHN(req, res) {
+  const cors = { 'Access-Control-Allow-Origin': '*' };
+  if (!keyOk(req.headers['x-intake-key'])) { await new Promise(r => setTimeout(r, 400)); return send(res, 403, { error: 'Bad intake key' }, cors); }
+  let body; try { body = JSON.parse((await readBody(req, 2 * 1024 * 1024)).toString('utf8') || '{}'); } catch (e) { return send(res, 400, { error: 'Bad JSON' }, cors); }
+  const rows = Array.isArray(body.rows) ? body.rows.slice(0, 300) : [];
+  const all = qColl.all('hnfrm').map(r => JSON.parse(r.data));
+  const bySrc = new Map(all.filter(d => d.srcKey).map(d => [d.srcKey, d]));
+  const results = [];
+  for (const r of rows) {
+    const out = { ref: r.srcKey };
+    try {
+      const srcKey = String(r.srcKey || '').slice(0, 120); if (!srcKey) throw new Error('missing row reference');
+      if (bySrc.has(srcKey)) { out.id = bySrc.get(srcKey).id; out.status = 'already received'; results.push(out); continue; }
+      const date = String(r.date || '').slice(0, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(Date.parse(date))) throw new Error('date received is missing or not a date');
+      if (date > new Date(Date.now() + 864e5).toISOString().slice(0, 10)) throw new Error('date received is in the future');
+      const cm = String(r.cat || '').match(/^\s*(C[1-9])\b/); if (!cm) throw new Error('choose a category (C1-C9)');
+      const cat = cm[1], sens = cat === 'C7' || cat === 'C8';
+      const location = String(r.location || '').trim(); if (location && !HN_LOC.includes(location)) throw new Error('facility / location is not on the list');
+      if (!location) throw new Error('choose the facility / location');
+      const description = sens ? 'NONE' : String(r.description || '').trim().slice(0, 4000);
+      if (!description) throw new Error('add a short description');
+      const yr = date.slice(0, 4); let mx = 0;
+      for (const d of all) { const mm = String(d.id || '').match(/^OHNEZ-FRM-(\d{4})-(\d{4})$/); if (mm && mm[1] === yr && +mm[2] > mx) mx = +mm[2]; }
+      const id = `OHNEZ-FRM-${yr}-${String(mx + 1).padStart(4, '0')}`;
+      const doc = { id, date, cat, description, srcKey, source: 'Google Sheet', received: now(), updated: now() };
+      for (const f of HN_FIELDS) { const v = String(r[f] == null ? '' : r[f]).trim().slice(0, 200); if (v) doc[f] = v; }
+      if (!doc.district) doc.district = /Chipangali/.test(location) ? 'Chipangali' : 'Lumezi';
+      doc.escalation = sens ? 'Sensitive referral' : 'None';
+      sWrite('hnfrm/' + id, doc, false); all.push(doc); bySrc.set(srcKey, doc);
+      out.id = id; out.status = 'created';
+    } catch (e) { out.error = e.message; }
+    results.push(out);
+  }
+  const ids = Array.isArray(body.statusIds) ? body.statusIds.slice(0, 1000).map(String) : [];
+  const cases = {}; for (const id of ids) { const d = all.find(x => x.id === id); cases[id] = d ? { ack: d.ack || '', closed: d.closed || '', assigned: d.assigned || '' } : null; }
+  return send(res, 200, { results, cases }, cors);
 }
 
 // ---------- one-time encrypted data updates shipped with the code (seeds/*.enc, key derived from MCP_TOKEN) ----------
